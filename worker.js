@@ -942,27 +942,23 @@ async function sendStreakMatches(chatId, env, minStreak) {
 
     const startTs = Date.UTC(targetDay.getUTCFullYear(), targetDay.getUTCMonth(), targetDay.getUTCDate(), 6, 30, 0) - MM_OFFSET;
     const endTs = startTs + 24 * 3600 * 1000;
-    const startDate = new Date(startTs).toISOString().slice(0, 10);
-    const endDate = new Date(endTs).toISOString().slice(0, 10);
 
-    // Query matches for target day (fixtures)
+    // Query by timestamp range (06:30 MM → next 06:30 MM)
     const { results: fx } = await env.DB.prepare(
-      "SELECT league_name, home, away, timestamp FROM matches WHERE date >= ? AND date < ? ORDER BY league_name ASC, timestamp ASC"
-    ).bind(startDate, endDate).all();
+      "SELECT league_name, home, away, timestamp FROM matches WHERE timestamp >= ? AND timestamp < ? AND status = 'NS' ORDER BY league_name ASC, timestamp ASC"
+    ).bind(startTs, endTs).all();
 
     if (!fx || !fx.length) {
       await sendMessage(chatId, "🔥 STREAK MATCHES (" + min + "+)\n📅 " + targetLabel + "\n\n❌ Streak match မ ရှိပါ", env);
       return;
     }
 
-    // Get streaks (D1 version)
     const streaksData = await getStreaksCache(env);
     if (!streaksData || !streaksData.teams) {
       await sendMessage(chatId, "⚠️ Streaks မရပါ", env);
       return;
     }
 
-    // Build team name -> streak map
     const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
     const teamMap = {};
     for (const t of streaksData.teams) {
@@ -990,7 +986,6 @@ async function sendStreakMatches(chatId, env, minStreak) {
       return parts.join(",");
     }
 
-    // Group by league
     const byLeague = {};
     let totalMatches = 0, totalTeams = 0;
 
@@ -1036,12 +1031,7 @@ async function sendStreakMatches(chatId, env, minStreak) {
   } catch (e) {
     await sendMessage(chatId, "⚠️ Streak Matches error: " + e.message, env);
   }
-
-function streakLine(label, s) {
-  if (!s) return label + " : -\n";
-  return label + " : " + s.type + " " + s.count + " ဆက်\n";
-}
-
+  
 async function sendTeamSearch(chatId, teamName, env) {
   if (!teamName) { await sendMessage(chatId, "❌ Format: /team Arsenal", env); return; }
   try {
