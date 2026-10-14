@@ -47,6 +47,25 @@ export default {
     try {
       const url = new URL(request.url);
       if (url.pathname === "/alert") return await handleAlert(request, env);
+      if (url.pathname === "/migrate") return await handleMigrate(request, env);
+      if (url.pathname === "/migrate-all") return await handleMigrateAll(request, env);
+      if (url.pathname === "/migrate-misc") return await handleMigrateMisc(request, env);
+      if (url.pathname === "/db-stats") {
+        const n = await env.DB.prepare("SELECT COUNT(*) AS n FROM matches").first();
+        return new Response(JSON.stringify({ ok: true, matches: n.n }), { headers: { "content-type": "application/json" } });
+      }
+      if (url.pathname === "/db-leagues") {
+        const { results } = await env.DB.prepare("SELECT DISTINCT league_name, COUNT(*) AS n FROM matches GROUP BY league_name ORDER BY n DESC LIMIT 30").all();
+        return new Response(JSON.stringify({ ok: true, leagues: results }), { headers: { "content-type": "application/json" } });
+      }
+      if (url.pathname === "/db-seasons") {
+        const { results } = await env.DB.prepare("SELECT season, COUNT(*) AS n FROM matches WHERE ft_home IS NOT NULL GROUP BY season ORDER BY n DESC LIMIT 10").all();
+        return new Response(JSON.stringify({ ok: true, seasons: results }), { headers: { "content-type": "application/json" } });
+      }
+      if (url.pathname === "/db-ylog") {
+        const { results } = await env.DB.prepare("SELECT date, home, away, ft_home, ft_away, result FROM y_log LIMIT 5").all();
+        return new Response(JSON.stringify({ ok: true, rows: results }), { headers: { "content-type": "application/json" } });
+      }
       if (request.method !== "POST") return new Response("Bot is running.");
       const update = await request.json();
       if (update.message) return await handleMessage(update.message, env);
@@ -951,12 +970,19 @@ function streakLine(label, s) {
 async function sendTeamSearch(chatId, teamName, env) {
   if (!teamName) { await sendMessage(chatId, "❌ Format: /team Arsenal", env); return; }
   try {
-    const res = await fetch(SHEET_URL + "?action=teamsearch&name=" + encodeURIComponent(teamName), { redirect: "follow" });
-    const data = JSON.parse(await res.text());
-    if (!data || !data.ok) { await sendMessage(chatId, "⚠️ Search error", env); return; }
-    const teams = data.teams || [];
+    const like = "%" + teamName.toLowerCase() + "%";
+    const { results } = await env.DB.prepare(
+      "SELECT id, name, league, matches FROM (" +
+      "SELECT home_id AS id, home AS name, league_name AS league, COUNT(*) AS matches FROM matches WHERE LOWER(home) LIKE ? GROUP BY home_id, home, league_name " +
+      "UNION ALL " +
+      "SELECT away_id AS id, away AS name, league_name AS league, COUNT(*) AS matches FROM matches WHERE LOWER(away) LIKE ? GROUP BY away_id, away, league_name" +
+      ") GROUP BY id ORDER BY matches DESC LIMIT 20"
+    ).bind(like, like).all();
+
+    const teams = results || [];
     if (!teams.length) { await sendMessage(chatId, "❌ '" + teamName + "' ရှာမတွေ့ပါ", env); return; }
     if (teams.length === 1) { await sendTeamDetail(chatId, teams[0].id, env, null); return; }
+
     let text = "👥 '" + teamName + "' — " + teams.length + " matches\n\n";
     const btns = [];
     teams.forEach(function(t, i) {
@@ -972,49 +998,110 @@ async function sendTeamSearch(chatId, teamName, env) {
 
 async function sendTeamDetail(chatId, teamId, env, replyTo) {
   try {
-    const res = await fetch(SHEET_URL + "?action=team&id=" + encodeURIComponent(teamId), { redirect: "follow" });
-    const data = JSON.parse(await res.text());
-    if (!data || !data.ok) { await sendMessage(chatId, "❌ Team data မရပါ", env); return; }
-    let text = "👥 " + (data.name || "?").toUpperCase() + "\n";
-    if (data.league) text += "🏆 " + data.league + "\n";
+    const tid = Number(teamId);
+    const { results: all } = await env.DB.prepare(
+      "SELECT * FROM matches WHERE home_id = ? OR away_id = ? ORDER BY timestamp DESC LIMIT 30"
+    ).bind(tid, tid).all();
+
+    if (!all || !all.length) { await sendMessage(chatId, "❌ Team data မရပါ", env); return; }
+
+    const first = all[0];
+    const teamName = String(first.home_id) === String(tid) ? first.home : first.away;
+    const league = first.league_name || "";
+
+    const ouRes = (gf, ga) => gf + ga > 2.5 ? "O" : gf + ga < 2.5 ? "U" : "P";
+    const haRes = (gf, ga) => gf > ga ? "W" : gf < ga ? "L" : "D";
+    const ahRes = (gf, ga, ahh) => {
+      const h = Number(ahh);
+      if (isNaN(h)) return "?";
+      const adj = gf + h - ga;
+      return adj > 0 ? "W" : adj < 0 ? "L" : "P";
+    };
+
+    const recent = [];
+    const homeL5 = [];
+    const awayL5 = [];
+    const ouSeq = [];
+    const haSeq = [];
+    const ahSeq = [];
+
+    for (const m of all) {
+      const isHome = String(m.home_id) === String(tid);
+      const gf = isHome ? Number(m.ft_home) : Number(m.ft_away);
+      const ga = isHome ? Number(m.ft_away) : Number(m.ft_home);
+      if (isNaN(gf) || isNaN(ga)) continue;
+
+      const rec = {
+        date: m.date,
+        home: m.home,
+        away: m.away,
+        fth: m.ft_home,
+        fta: m.ft_away,
+        hth: m.ht_home,
+        hta: m.ht_away,
+        side: isHome ? "H" : "A",
+        ou: ouRes(gf, ga),
+        ah: ahRes(gf, ga, m.ahh),
+        ha: haRes(gf, ga)
+      };
+      if (recent.length < 5) recent.push(rec);
+      if (isHome && homeL5.length < 5) homeL5.push(rec);
+      if (!isHome && awayL5.length < 5) awayL5.push(rec);
+      if (ouSeq.length < 10) {
+        ouSeq.push(rec.ou);
+        haSeq.push(rec.ha);
+        ahSeq.push(rec.ah);
+      }
+    }
+
+    const calcStreak = (seq) => {
+      if (!seq.length) return null;
+      const first = seq[0]; let c = 0;
+      for (const s of seq) { if (s === first) c++; else break; }
+      return c >= 4 ? { type: first, count: c } : null;
+    };
+
+    let text = "👥 " + teamName.toUpperCase() + "\n";
+    if (league) text += "🏆 " + league + "\n";
     text += "\n";
-    const s = data.streaks || {};
+
+    const sOu = calcStreak(ouSeq);
+    const sHa = calcStreak(haSeq);
+    const sAh = calcStreak(ahSeq);
     text += "📊 Streaks\n";
-    let anyS = false;
-    if (s.ou) { text += "O/U : " + s.ou.type + " " + s.ou.count + " ဆက်\n"; anyS = true; }
-    if (s.ha) { text += "HA  : " + s.ha.type + " " + s.ha.count + " ဆက်\n"; anyS = true; }
-    if (s.ah) { text += "AH  : " + s.ah.type + " " + s.ah.count + " ဆက်\n"; anyS = true; }
-    if (!anyS) text += "-\n";
+    if (sOu) text += "O/U : " + sOu.type + " " + sOu.count + " ဆက်\n";
+    if (sHa) text += "HA  : " + sHa.type + " " + sHa.count + " ဆက်\n";
+    if (sAh) text += "AH  : " + sAh.type + " " + sAh.count + " ဆက်\n";
+    if (!sOu && !sHa && !sAh) text += "-\n";
     text += "\n";
-    const recent = data.recent || [];
+
     if (recent.length) {
       text += "📈 Recent " + recent.length + "\n";
       recent.forEach(function(r, i) {
         const score = r.fth + "-" + r.fta;
-        const ht = (r.hth !== null && r.hta !== null) ? " (HT " + r.hth + "-" + r.hta + ")" : "";
+        const ht = (r.hth !== null && r.hta !== null && r.hth !== "") ? " (HT " + r.hth + "-" + r.hta + ")" : "";
         let line = (i + 1) + ". " + r.home + " " + score + " " + r.away + " [" + r.side + "]" + ht;
         line += " | HA:" + (r.ha || "?") + " | AH:" + (r.ah || "?") + " | O/U:" + (r.ou || "?");
         text += line + "\n";
       });
       text += "\n";
     }
-    const hL5 = data.homeL5 || [];
-    if (hL5.length) {
+
+    if (homeL5.length) {
       text += "🏠 Home L5\n";
-      text += "HA  : " + hL5.map(function(r) { return r.ha || "?"; }).join(" ") + "\n";
-      text += "AH  : " + hL5.map(function(r) { return r.ah || "?"; }).join(" ") + "\n";
-      text += "O/U : " + hL5.map(function(r) { return r.ou || "?"; }).join(" ") + "\n";
-      text += "\n";
+      text += "HA  : " + homeL5.map(r => r.ha || "?").join(" ") + "\n";
+      text += "AH  : " + homeL5.map(r => r.ah || "?").join(" ") + "\n";
+      text += "O/U : " + homeL5.map(r => r.ou || "?").join(" ") + "\n\n";
     }
-    const aL5 = data.awayL5 || [];
-    if (aL5.length) {
+
+    if (awayL5.length) {
       text += "✈️ Away L5\n";
-      text += "HA  : " + aL5.map(function(r) { return r.ha || "?"; }).join(" ") + "\n";
-      text += "AH  : " + aL5.map(function(r) { return r.ah || "?"; }).join(" ") + "\n";
-      text += "O/U : " + aL5.map(function(r) { return r.ou || "?"; }).join(" ") + "\n";
-      text += "\n";
+      text += "HA  : " + awayL5.map(r => r.ha || "?").join(" ") + "\n";
+      text += "AH  : " + awayL5.map(r => r.ah || "?").join(" ") + "\n";
+      text += "O/U : " + awayL5.map(r => r.ou || "?").join(" ") + "\n\n";
     }
-    const infer = await findInferForTeam(data.name, env);
+
+    const infer = await findInferForTeam(teamName, env);
     if (infer) {
       text += "📊 Infer (next match)\n";
       text += "🏆 " + infer.league + "\n";
@@ -1026,12 +1113,13 @@ async function sendTeamDetail(chatId, teamId, env, replyTo) {
       if (infer.formula2.pass) text += "🎯 F2: OVER " + infer.formula2.line + "\n";
       if (infer.formula3.pass) text += "🎯 F3: UNDER (" + infer.formula3.openLine + "→" + infer.formula3.curLine + ")\n";
     }
+
     if (text.length > 4000) text = text.slice(0, 4000) + "...";
     await sendMessage(chatId, text, env, undefined, replyTo);
   } catch (e) {
     await sendMessage(chatId, "⚠️ Team detail error: " + e.message, env);
   }
-}
+  
 // ============================================================
 // PART 4A-1 — Menu + Helpers
 // ============================================================
@@ -1232,7 +1320,6 @@ async function findSheetAny(sheetData, home, away) {
   }
   return null;
 }
-
 async function getStreaksCache(env) {
   try {
     const raw = await env.BOT_KV.get("streaks:cache");
@@ -1241,18 +1328,105 @@ async function getStreaksCache(env) {
       if (d && d.ts && (Date.now() - d.ts) < 30 * 60 * 1000) return d.data;
     }
   } catch (e) {}
-  try {
-    const res = await fetch(SHEET_URL + "?action=streaks", { redirect: "follow" });
-    const data = JSON.parse(await res.text());
-    if (data && data.ok) {
-      try { await env.BOT_KV.put("streaks:cache", JSON.stringify({ ts: Date.now(), data: data }), { expirationTtl: 1800 }); } catch (e) {}
-      return data;
-    }
-  } catch (e) {}
-  return null;
-}
 
-function streakBadgeByName(teamName, streaks) {
+  try {
+    const seasonRow = await env.DB.prepare(
+      "SELECT season, COUNT(*) AS n FROM matches WHERE ft_home IS NOT NULL AND season IS NOT NULL GROUP BY season ORDER BY n DESC LIMIT 1"
+    ).first();
+    const season = seasonRow ? String(seasonRow.season) : "";
+
+    const { results } = await env.DB.prepare(
+      "SELECT home_id, home, away_id, away, ft_home, ft_away, ahh, league_name, timestamp FROM matches WHERE season = ? AND ft_home IS NOT NULL ORDER BY timestamp DESC"
+    ).bind(season).all();
+
+    if (!results || !results.length) return null;
+
+    const MIN_STREAK = 4;
+    const ouRes = (gf, ga) => gf > ga ? "W" : gf < ga ? "L" : "D";
+    const ahRes = (gf, ga, ahh) => {
+      const h = Number(ahh);
+      if (isNaN(h)) return "?";
+      const adj = gf + h - ga;
+      return adj > 0 ? "W" : adj < 0 ? "L" : "P";
+    };
+    const haRes = (gf, ga) => gf > ga ? "W" : gf < ga ? "L" : "D";
+
+    const idx = {};
+    for (const r of results) {
+      const hid = String(r.home_id), aid = String(r.away_id);
+      if (!idx[hid]) idx[hid] = { name: r.home, league: "", matches: [] };
+      if (!idx[aid]) idx[aid] = { name: r.away, league: "", matches: [] };
+      idx[hid].league = r.league_name || idx[hid].league;
+      idx[aid].league = r.league_name || idx[aid].league;
+      idx[hid].matches.push({ side: "H", gf: Number(r.ft_home), ga: Number(r.ft_away), ahh: r.ahh, ts: r.timestamp });
+      idx[aid].matches.push({ side: "A", gf: Number(r.ft_away), ga: Number(r.ft_home), ahh: r.ahh, ts: r.timestamp });
+    }
+
+    const calcStreak = (seq) => {
+      if (!seq.length) return null;
+      const first = seq[0]; let c = 0;
+      for (const s of seq) { if (s === first) c++; else break; }
+      return c >= MIN_STREAK ? { value: first, count: c } : null;
+    };
+
+    const teams = [];
+    for (const tid in idx) {
+      const t = idx[tid];
+      t.matches.sort((a, b) => b.ts - a.ts);
+      const last10 = t.matches.slice(0, 10);
+
+      const ovOU = last10.map(m => ouRes(m.gf, m.ga));
+      const ovAH = last10.map(m => ahRes(m.gf, m.ga, m.ahh));
+      const ovHA = last10.map(m => haRes(m.gf, m.ga));
+      const hOU = last10.filter(m => m.side === "H").map(m => ouRes(m.gf, m.ga));
+      const hAH = last10.filter(m => m.side === "H").map(m => ahRes(m.gf, m.ga, m.ahh));
+      const hHA = last10.filter(m => m.side === "H").map(m => haRes(m.gf, m.ga));
+      const aOU = last10.filter(m => m.side === "A").map(m => ouRes(m.gf, m.ga));
+      const aAH = last10.filter(m => m.side === "A").map(m => ahRes(m.gf, m.ga, m.ahh));
+      const aHA = last10.filter(m => m.side === "A").map(m => haRes(m.gf, m.ga));
+
+      const streaks = {};
+      const ov = {};
+      const o1 = calcStreak(ovOU); if (o1) ov.ou = o1;
+      const o2 = calcStreak(ovAH); if (o2) ov.ah = o2;
+      const o3 = calcStreak(ovHA); if (o3) ov.ha = o3;
+      if (Object.keys(ov).length) streaks.overall = ov;
+
+      const hm = {};
+      const h1 = calcStreak(hOU); if (h1) hm.ou = h1;
+      const h2 = calcStreak(hAH); if (h2) hm.ah = h2;
+      const h3 = calcStreak(hHA); if (h3) hm.ha = h3;
+      if (Object.keys(hm).length) streaks.home = hm;
+
+      const am = {};
+      const a1 = calcStreak(aOU); if (a1) am.ou = a1;
+      const a2 = calcStreak(aAH); if (a2) am.ah = a2;
+      const a3 = calcStreak(aHA); if (a3) am.ha = a3;
+      if (Object.keys(am).length) streaks.away = am;
+
+      if (Object.keys(streaks).length) {
+        teams.push({ id: tid, name: t.name, league: t.league, streaks: streaks });
+      }
+    }
+
+    const data = {
+      ok: true,
+      updated: new Date().toISOString(),
+      minStreak: MIN_STREAK,
+      totalRows: results.length,
+      season: season,
+      teams: teams,
+      leagues: []
+    };
+
+    try { await env.BOT_KV.put("streaks:cache", JSON.stringify({ ts: Date.now(), data: data }), { expirationTtl: 1800 }); } catch (e) {}
+    return data;
+  } catch (e) {
+    console.log("getStreaksCache D1 err: " + e.message);
+    return null;
+  }
+
+  function streakBadgeByName(teamName, streaks) {
   if (!streaks || !streaks.teams || !teamName) return "";
   const norm = function(s) { return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); };
   const q = norm(teamName);
@@ -1641,89 +1815,385 @@ registerHint(function satChampionshipHint(hints, lgCode, matches, byN) {
 
 async function sendRoundStats(chatId, env) {
   try {
-    const res = await fetch(SHEET_URL + "?action=roundstats", { redirect: "follow" });
-    const data = JSON.parse(await res.text());
-    if (!data || !data.ok) { await sendMessage(chatId, "⚠️ Round Stats မရပါ", env); return; }
+    const SIX_IDS = [39, 40, 140, 78, 135, 61];
+    const { results } = await env.DB.prepare(
+      "SELECT league_id, league_name, round, ft_home, ft_away, ahh, timestamp FROM matches WHERE league_id IN (39,40,140,78,135,61) AND ft_home IS NOT NULL AND ft_away IS NOT NULL AND round IS NOT NULL AND round != '' ORDER BY league_id ASC, timestamp ASC"
+    ).all();
 
-    function fmtSeq(s) {
-      if (!s) return '-';
-      return s.split('').join(' . ');
-    }
-
-    let text = "📊 ROUND STATS\n";
-    if (data.updated) text += "📅 " + data.updated + "\n";
-    text += "\n";
-
-    const leagues = data.leagues || [];
-    if (!leagues.length) {
-      text += "❌ FT ပွဲ မ ရှိပါ";
-      await sendMessage(chatId, text, env);
+    if (!results || !results.length) {
+      await sendMessage(chatId, "❌ Round data မရပါ", env);
       return;
     }
 
-    leagues.forEach(function(lg) {
-      text += "🏆 " + lg.name + " — " + lg.round + " (" + lg.count + ")\n\n";
-      text += "OU : " + fmtSeq(lg.ou) + "\n";
-      text += "AH : " + fmtSeq(lg.ah) + "\n";
-      text += "HA : " + fmtSeq(lg.ha) + "\n";
+    const ouRes = (h, a) => (h + a) > 2.5 ? "O" : (h + a) < 2.5 ? "U" : "?";
+    const ahRes = (h, a, ahh) => {
+      const v = Number(ahh);
+      if (isNaN(v)) return "?";
+      const adj = h + v - a;
+      return adj > 0 ? "W" : adj < 0 ? "L" : "P";
+    };
+    const haRes = (h, a) => h > a ? "W" : h < a ? "L" : "D";
 
-      if (lg.prevStreaks) {
-        text += "\n📌 " + lg.prevStreaks + "\n";
-      }
-      text += "\n";
+    const groups = {};
+    for (const r of results) {
+      const key = r.league_id + "|" + r.round;
+      if (!groups[key]) groups[key] = { league_id: r.league_id, name: r.league_name, round: r.round, ou: [], ah: [], ha: [] };
+      groups[key].ou.push(ouRes(Number(r.ft_home), Number(r.ft_away)));
+      groups[key].ah.push(ahRes(Number(r.ft_home), Number(r.ft_away), r.ahh));
+      groups[key].ha.push(haRes(Number(r.ft_home), Number(r.ft_away)));
+    }
+
+    const sorted = Object.values(groups).sort((a, b) => {
+      const ai = SIX_IDS.indexOf(Number(a.league_id));
+      const bi = SIX_IDS.indexOf(Number(b.league_id));
+      return ai - bi;
     });
 
-    await sendMessage(chatId, text, env);
+    const sixOU = [], sixAH = [], sixHA = [];
+    for (const g of sorted) {
+      for (const x of g.ou) sixOU.push(x);
+      for (const x of g.ah) sixAH.push(x);
+      for (const x of g.ha) sixHA.push(x);
+    }
+
+    let text = "📊 ROUND STATS — 6 League\n";
+    text += "📅 " + new Date().toISOString().slice(0, 10) + "\n\n";
+
+    text += "🎯 SIX COMBINED (" + sixOU.length + ")\n";
+    text += "O/U : " + sixOU.join("") + "\n";
+    text += "HA  : " + sixHA.join("") + "\n";
+    text += "AH  : " + sixAH.join("") + "\n\n";
+
+    for (const g of sorted) {
+      text += "🏆 " + (g.name || "?") + " — " + g.round + " (" + g.ou.length + ")\n";
+      text += "O/U : " + g.ou.join("") + "\n";
+      text += "HA  : " + g.ha.join("") + "\n";
+      text += "AH  : " + g.ah.join("") + "\n\n";
+    }
+
+    if (text.length > 4000) {
+      let chunk = "📊 ROUND STATS — 6 League\n📅 " + new Date().toISOString().slice(0, 10) + "\n\n";
+      chunk += "🎯 SIX COMBINED (" + sixOU.length + ")\nO/U : " + sixOU.join("") + "\nHA  : " + sixHA.join("") + "\nAH  : " + sixAH.join("") + "\n\n";
+      await sendMessage(chatId, chunk, env);
+      chunk = "";
+      for (const g of sorted) {
+        const block = "🏆 " + (g.name || "?") + " — " + g.round + " (" + g.ou.length + ")\nO/U : " + g.ou.join("") + "\nHA  : " + g.ha.join("") + "\nAH  : " + g.ah.join("") + "\n\n";
+        if ((chunk + block).length > 3900) {
+          await sendMessage(chatId, chunk, env);
+          chunk = block;
+        } else {
+          chunk += block;
+        }
+      }
+      if (chunk) await sendMessage(chatId, chunk, env);
+    } else {
+      await sendMessage(chatId, text, env);
+    }
   } catch (e) {
     await sendMessage(chatId, "⚠️ Round Stats error: " + e.message, env);
   }
-}
 
 async function sendYResults(chatId, env, dateParam) {
   try {
-    var url = SHEET_URL + "?action=ylog";
-    if (dateParam) url += "&date=" + encodeURIComponent(dateParam);
+    // Target date logic (MM 6:30 rule)
+    const MM_OFFSET = 6 * 3600 * 1000 + 30 * 60 * 1000;
+    const now = Date.now();
+    const nowMM = new Date(now + MM_OFFSET);
+    const y = nowMM.getUTCFullYear();
+    const m = nowMM.getUTCMonth();
+    const d = nowMM.getUTCDate();
+    const hh = nowMM.getUTCHours();
 
-    const res = await fetch(url, { redirect: "follow" });
-    const data = JSON.parse(await res.text());
+    let targetDay;
+    if (dateParam) {
+      const parts = dateParam.split("-");
+      targetDay = new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10)));
+    } else {
+      if (hh < 6) {
+        targetDay = new Date(Date.UTC(y, m, d - 1));
+      } else {
+        targetDay = new Date(Date.UTC(y, m, d));
+      }
+    }
 
-    if (!data || !data.ok) {
-      await sendMessage(chatId, "⚠️ Y_Log မရပါ", env);
+    const startTs = Date.UTC(targetDay.getUTCFullYear(), targetDay.getUTCMonth(), targetDay.getUTCDate(), 6, 30, 0) - MM_OFFSET;
+    const endTs = startTs + 24 * 3600 * 1000;
+
+    const startDate = new Date(startTs).toISOString().slice(0, 10);
+    const endDate = new Date(endTs).toISOString().slice(0, 10);
+    const targetLabel = targetDay.toISOString().slice(0, 10);
+
+    const { results } = await env.DB.prepare(
+      "SELECT date, home, away, ft_home, ft_away, result FROM y_log WHERE date >= ? AND date < ? ORDER BY date ASC"
+    ).bind(startDate + " 00:00", endDate + " 00:00").all();
+
+    if (!results || !results.length) {
+      await sendMessage(chatId, "📊 Y RESULTS — " + targetLabel + "\n\n❌ Y ပွဲ မ ရှိပါ", env);
       return;
     }
 
-    const rows = data.rows || [];
-    if (!rows.length) {
-      await sendMessage(chatId, "❌ Y ပွဲ မ ရှိပါ", env);
-      return;
-    }
-
-    let text = "📊 Y RESULTS";
-    if (dateParam) text += " — " + dateParam;
-    text += "\n\n";
-
+    let text = "📊 Y RESULTS — " + targetLabel + "\n\n";
     let pass = 0, fail = 0, pending = 0;
 
-    rows.forEach(function(r) {
+    for (const r of results) {
       var ft = "-";
       if (r.ft_home !== null && r.ft_home !== '' && r.ft_away !== null && r.ft_away !== '') {
         ft = r.ft_home + "-" + r.ft_away;
       }
-
       var res = r.result || "⏳";
       if (res === "✅") pass++;
       else if (res === "❌") fail++;
       else pending++;
-
       text += res + " " + r.home + " vs " + r.away + " | " + ft + "\n";
-    });
+    }
 
     text += "\n✅ " + pass + " | ❌ " + fail + " | ⏳ " + pending;
-
     if (text.length > 4000) text = text.slice(0, 4000) + "\n...";
 
     await sendMessage(chatId, text, env);
   } catch (e) {
     await sendMessage(chatId, "⚠️ Y Results error: " + e.message, env);
   }
+
+  // ============================================================
+// MIGRATION + D1 HELPERS
+// ============================================================
+
+async function handleMigrate(request, env) {
+  try {
+    const url = new URL(request.url);
+    const offset = parseInt(url.searchParams.get("offset") || "0", 10);
+    const limit = parseInt(url.searchParams.get("limit") || "500", 10);
+    const SHEET_URL = env.SHEET_URL;
+    const apiUrl = SHEET_URL + "?action=cachematches&offset=" + offset + "&limit=" + limit;
+
+    const res = await fetch(apiUrl);
+    const json = await res.json();
+    if (!json.ok) return new Response("Sheet error: " + JSON.stringify(json), { status: 500 });
+
+    const rows = json.rows || [];
+    if (!rows.length) return new Response(JSON.stringify({ ok: true, inserted: 0, total: json.total, offset }));
+
+    const stmt = env.DB.prepare(
+      "INSERT OR REPLACE INTO matches (fixture_id,date,timestamp,league_id,league_name,country,tier,season,round,type,status,home_id,home,away_id,away,ft_home,ft_away,ht_home,ht_away,venue_id,venue_name,neutral,fetched_at,ahh,b365ahh,b365aha,b365o25,b365u25) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    );
+
+    const batch = rows.map(r => stmt.bind(
+      r.fixture_id || "", r.date || "", r.timestamp || 0, r.league_id || 0, r.league_name || "",
+      r.country || "", r.tier || 0, String(r.season || ""), r.round || "", r.type || "",
+      r.status || "", r.home_id || 0, r.home || "", r.away_id || 0, r.away || "",
+      r.ft_home === "" ? null : r.ft_home, r.ft_away === "" ? null : r.ft_away,
+      r.ht_home === "" ? null : r.ht_home, r.ht_away === "" ? null : r.ht_away,
+      r.venue_id || "", r.venue_name || "", r.neutral || "", r.fetched_at || "",
+      r.ahh === "" ? null : r.ahh, r.b365ahh === "" ? null : r.b365ahh,
+      r.b365aha === "" ? null : r.b365aha, r.b365o25 === "" ? null : r.b365o25,
+      r.b365u25 === "" ? null : r.b365u25
+    ));
+
+    await env.DB.batch(batch);
+    const nextOffset = offset + rows.length;
+    const done = nextOffset >= (json.total || 0);
+
+    return new Response(JSON.stringify({ ok: true, inserted: rows.length, offset: nextOffset, total: json.total, done }), { headers: { "content-type": "application/json" } });
+  } catch (e) {
+    return new Response("migrate err: " + e.message, { status: 500 });
+  }
 }
+
+async function handleMigrateAll(request, env) {
+  const SHEET_URL = env.SHEET_URL;
+  const CHUNK = 500;
+  const url = new URL(request.url);
+  let offset = parseInt(url.searchParams.get("offset") || "0", 10);
+  let total = 0, insertedTotal = 0, loops = 0;
+
+  try {
+    while (true) {
+      loops++;
+      if (loops > 45) break;
+
+      const apiUrl = SHEET_URL + "?action=cachematches&offset=" + offset + "&limit=" + CHUNK;
+      const res = await fetch(apiUrl);
+      const json = await res.json();
+      if (!json.ok) break;
+
+      total = json.total || 0;
+      const rows = json.rows || [];
+      if (!rows.length) break;
+
+      const stmt = env.DB.prepare(
+        "INSERT OR REPLACE INTO matches (fixture_id,date,timestamp,league_id,league_name,country,tier,season,round,type,status,home_id,home,away_id,away,ft_home,ft_away,ht_home,ht_away,venue_id,venue_name,neutral,fetched_at,ahh,b365ahh,b365aha,b365o25,b365u25) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+      );
+
+      const batch = rows.map(r => stmt.bind(
+        r.fixture_id || "", r.date || "", r.timestamp || 0, r.league_id || 0, r.league_name || "",
+        r.country || "", r.tier || 0, String(r.season || ""), r.round || "", r.type || "",
+        r.status || "", r.home_id || 0, r.home || "", r.away_id || 0, r.away || "",
+        r.ft_home === "" ? null : r.ft_home, r.ft_away === "" ? null : r.ft_away,
+        r.ht_home === "" ? null : r.ht_home, r.ht_away === "" ? null : r.ht_away,
+        r.venue_id || "", r.venue_name || "", r.neutral || "", r.fetched_at || "",
+        r.ahh === "" ? null : r.ahh, r.b365ahh === "" ? null : r.b365ahh,
+        r.b365aha === "" ? null : r.b365aha, r.b365o25 === "" ? null : r.b365o25,
+        r.b365u25 === "" ? null : r.b365u25
+      ));
+
+      await env.DB.batch(batch);
+      insertedTotal += rows.length;
+      offset += rows.length;
+      if (offset >= total) break;
+    }
+
+    const countRes = await env.DB.prepare("SELECT COUNT(*) AS n FROM matches").first();
+    return new Response(JSON.stringify({ ok: true, insertedTotal, sheetTotal: total, loops, d1Count: countRes ? countRes.n : 0 }), { headers: { "content-type": "application/json" } });
+  } catch (e) {
+    return new Response(JSON.stringify({ ok: false, err: e.message, insertedTotal, offset, loops }), { status: 500, headers: { "content-type": "application/json" } });
+  }
+}
+
+async function handleMigrateMisc(request, env) {
+  const SHEET_URL = env.SHEET_URL;
+  const results = {};
+
+  try {
+    // 1. y_log
+    {
+      const r = await fetch(SHEET_URL + "?action=ylog");
+      const j = await r.json();
+      if (j.ok && j.rows.length) {
+        const stmt = env.DB.prepare("INSERT OR REPLACE INTO y_log (date, fixture_id, league, home, away, ft_home, ft_away, result, saved_at) VALUES (?,?,?,?,?,?,?,?,?)");
+        const batch = j.rows.map(x => stmt.bind(
+          x.date || "", x.fixture_id || "", x.league || "", x.home || "", x.away || "",
+          x.ft_home === "" ? null : x.ft_home, x.ft_away === "" ? null : x.ft_away,
+          x.result || "", x.saved_at || x.date || ""
+        ));
+        await env.DB.batch(batch);
+        results.y_log = j.rows.length;
+      } else results.y_log = 0;
+    }
+
+    // 2. team_alias
+    {
+      const r = await fetch(SHEET_URL + "?action=teamalias");
+      const j = await r.json();
+      if (j.ok && j.rows.length) {
+        const stmt = env.DB.prepare("INSERT OR REPLACE INTO team_alias (league, csv_name, api_id, api_name, status) VALUES (?,?,?,?,?)");
+        const batch = j.rows.map(x => stmt.bind(
+          x.league_code || "", x.csv_name || "", x.api_team_id || 0, x.api_name || "", x.status || ""
+        ));
+        await env.DB.batch(batch);
+        results.team_alias = j.rows.length;
+      } else results.team_alias = 0;
+    }
+
+    // 3. infer_alias
+    {
+      const r = await fetch(SHEET_URL + "?action=inferaliasraw");
+      const j = await r.json();
+      if (j.ok && j.rows.length) {
+        const stmt = env.DB.prepare("INSERT OR REPLACE INTO infer_alias (key, value) VALUES (?,?)");
+        const batch = j.rows.map(x => stmt.bind(x.infer_name || "", x.sheet_name || ""));
+        await env.DB.batch(batch);
+        results.infer_alias = j.rows.length;
+      } else results.infer_alias = 0;
+    }
+
+    // 4. league_map
+    {
+      const r = await fetch(SHEET_URL + "?action=leaguemap");
+      const j = await r.json();
+      if (j.ok && j.rows.length) {
+        const stmt = env.DB.prepare("INSERT OR REPLACE INTO league_map (id, country, tier, name, code, infer_id) VALUES (?,?,?,?,?,?)");
+        const batch = j.rows.map(x => stmt.bind(
+          x.league_id || 0, x.country || "", (typeof x.tier === "number" ? x.tier : 0),
+          x.league_name || "", x.code || "", x.infer_id || ""
+        ));
+        await env.DB.batch(batch);
+        results.league_map = j.rows.length;
+      } else results.league_map = 0;
+    }
+
+    // 5. line_archive
+    {
+      const r = await fetch(SHEET_URL + "?action=linearchive");
+      const j = await r.json();
+      if (j.ok && j.rows.length) {
+        const stmt = env.DB.prepare("INSERT OR REPLACE INTO line_archive (id, date, league, home, away, kickoff, open_ah, cur_ah, open_total, cur_total, fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+        const batch = j.rows.map(x => {
+          const numOrNull = (v) => (v === undefined || v === null || v === "") ? null : v;
+          const strOr = (v) => (v === undefined || v === null) ? "" : String(v);
+          return stmt.bind(
+            strOr(x.fixture_id) + "_" + strOr(x.date),
+            strOr(x.date), strOr(x.league), strOr(x.home), strOr(x.away),
+            strOr(x.kickoff), numOrNull(x.open_ah), numOrNull(x.cur_ah),
+            numOrNull(x.open_total), numOrNull(x.cur_total), strOr(x.fetched_at)
+          );
+        });
+        await env.DB.batch(batch);
+        results.line_archive = j.rows.length;
+      } else results.line_archive = 0;
+    }
+
+    return new Response(JSON.stringify({ ok: true, results }), { headers: { "content-type": "application/json" } });
+  } catch (e) {
+    return new Response(JSON.stringify({ ok: false, err: e.message, results }), { status: 500, headers: { "content-type": "application/json" } });
+  }
+}
+
+// ============================================================
+// D1 HELPERS
+// ============================================================
+
+async function dbGetMatchesBySeason(env, season) {
+  const q = season
+    ? "SELECT home_id, home, away_id, away, ft_home, ft_away, ht_home, ht_away, ahh, season, timestamp FROM matches WHERE season = ? AND ft_home IS NOT NULL ORDER BY timestamp DESC"
+    : "SELECT home_id, home, away_id, away, ft_home, ft_away, ht_home, ht_away, ahh, season, timestamp FROM matches WHERE ft_home IS NOT NULL ORDER BY timestamp DESC";
+  const stmt = season ? env.DB.prepare(q).bind(season) : env.DB.prepare(q);
+  const { results } = await stmt.all();
+  return results || [];
+}
+
+async function dbGetCurrentSeason(env) {
+  const row = await env.DB.prepare(
+    "SELECT season FROM matches WHERE ft_home IS NOT NULL AND season IS NOT NULL ORDER BY timestamp DESC LIMIT 1"
+  ).first();
+  return row ? String(row.season) : "";
+}
+
+async function dbGetTeamMatches(env, teamId, limit) {
+  const lim = limit || 10;
+  const { results } = await env.DB.prepare(
+    "SELECT * FROM matches WHERE home_id = ? OR away_id = ? ORDER BY timestamp DESC LIMIT ?"
+  ).bind(teamId, teamId, lim).all();
+  return results || [];
+}
+
+async function dbFindTeam(env, name) {
+  const { results } = await env.DB.prepare(
+    "SELECT DISTINCT home_id AS id, home AS name, league_name FROM matches WHERE LOWER(home) LIKE ? UNION SELECT DISTINCT away_id AS id, away AS name, league_name FROM matches WHERE LOWER(away) LIKE ? LIMIT 20"
+  ).bind("%" + name.toLowerCase() + "%", "%" + name.toLowerCase() + "%").all();
+  return results || [];
+}
+
+async function dbGetRoundStats(env) {
+  const { results } = await env.DB.prepare(
+    "SELECT league_id, league_name, round, ft_home, ft_away, ahh, timestamp FROM matches WHERE league_id IN (39,40,140,78,135,61) AND ft_home IS NOT NULL AND round IS NOT NULL AND round != '' ORDER BY league_id, timestamp ASC"
+  ).all();
+  return results || [];
+}
+
+async function dbGetYLog(env, dateParam) {
+  let q = "SELECT date, fixture_id, league, home, away, ft_home, ft_away, result FROM y_log";
+  const binds = [];
+  if (dateParam) { q += " WHERE date LIKE ?"; binds.push(dateParam + "%"); }
+  q += " ORDER BY date DESC";
+  const stmt = binds.length ? env.DB.prepare(q).bind(...binds) : env.DB.prepare(q);
+  const { results } = await stmt.all();
+  return results || [];
+}
+
+async function dbGetInferAliases(env) {
+  const { results } = await env.DB.prepare("SELECT key, value FROM infer_alias").all();
+  const map = {};
+  for (const r of results || []) map[r.key] = r.value;
+  return map;
+        }
