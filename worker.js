@@ -929,38 +929,113 @@ async function sendStreaks(chatId, env) {
 async function sendStreakMatches(chatId, env, minStreak) {
   try {
     const min = minStreak || 5;
-    const res = await fetch(SHEET_URL + "?action=streakmatches&min=" + min, { redirect: "follow" });
-    const data = JSON.parse(await res.text());
-    if (!data || !data.ok) { await sendMessage(chatId, "⚠️ Streak Matches မရပါ", env); return; }
 
-    let text = "🔥 STREAK MATCHES (" + data.minStreak + "+)\n";
-    text += "📅 " + data.targetDate + "\n\n";
+    // Target date (MM 6:30 rule)
+    const MM_OFFSET = 6 * 3600 * 1000 + 30 * 60 * 1000;
+    const nowMM = new Date(Date.now() + MM_OFFSET);
+    const y = nowMM.getUTCFullYear(), m = nowMM.getUTCMonth(), d = nowMM.getUTCDate();
+    const hh = nowMM.getUTCHours();
+    let targetDay;
+    if (hh < 6) targetDay = new Date(Date.UTC(y, m, d - 1));
+    else targetDay = new Date(Date.UTC(y, m, d));
+    const targetLabel = targetDay.toISOString().slice(0, 10);
 
-    const leagues = data.leagues || [];
-    if (!leagues.length) {
-      text += "❌ Streak match မ ရှိပါ";
-      await sendMessage(chatId, text, env);
+    const startTs = Date.UTC(targetDay.getUTCFullYear(), targetDay.getUTCMonth(), targetDay.getUTCDate(), 6, 30, 0) - MM_OFFSET;
+    const endTs = startTs + 24 * 3600 * 1000;
+    const startDate = new Date(startTs).toISOString().slice(0, 10);
+    const endDate = new Date(endTs).toISOString().slice(0, 10);
+
+    // Query matches for target day (fixtures)
+    const { results: fx } = await env.DB.prepare(
+      "SELECT league_name, home, away, timestamp FROM matches WHERE date >= ? AND date < ? ORDER BY league_name ASC, timestamp ASC"
+    ).bind(startDate, endDate).all();
+
+    if (!fx || !fx.length) {
+      await sendMessage(chatId, "🔥 STREAK MATCHES (" + min + "+)\n📅 " + targetLabel + "\n\n❌ Streak match မ ရှိပါ", env);
       return;
     }
 
-    leagues.forEach(function(lg) {
-      text += "🏆 " + lg.name + "\n";
-      lg.matches.forEach(function(m) {
-        let line = "• " + m.home + " vs " + m.away + " [" + m.time + "]\n";
-        if (m.homeStreak) line += "  🏠 " + m.home + ": " + m.homeStreak + "\n";
-        if (m.awayStreak) line += "  ✈️ " + m.away + ": " + m.awayStreak + "\n";
-        text += line;
-      });
-      text += "\n";
-    });
+    // Get streaks (D1 version)
+    const streaksData = await getStreaksCache(env);
+    if (!streaksData || !streaksData.teams) {
+      await sendMessage(chatId, "⚠️ Streaks မရပါ", env);
+      return;
+    }
 
-    text += "Total: " + data.totalMatches + " matches / " + data.totalTeams + " teams";
+    // Build team name -> streak map
+    const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    const teamMap = {};
+    for (const t of streaksData.teams) {
+      teamMap[norm(t.name)] = t;
+    }
+
+    function findTeam(name) {
+      const q = norm(name);
+      if (teamMap[q]) return teamMap[q];
+      for (const k in teamMap) {
+        if (k.indexOf(q) >= 0 || q.indexOf(k) >= 0) return teamMap[k];
+      }
+      return null;
+    }
+
+    function streakStr(t) {
+      if (!t || !t.streaks) return "";
+      const parts = [];
+      const s = t.streaks;
+      if (s.overall) {
+        if (s.overall.ou) parts.push("O/U:" + s.overall.ou.value + s.overall.ou.count);
+        if (s.overall.ha) parts.push("HA:" + s.overall.ha.value + s.overall.ha.count);
+        if (s.overall.ah) parts.push("AH:" + s.overall.ah.value + s.overall.ah.count);
+      }
+      return parts.join(",");
+    }
+
+    // Group by league
+    const byLeague = {};
+    let totalMatches = 0, totalTeams = 0;
+
+    for (const f of fx) {
+      const hTeam = findTeam(f.home);
+      const aTeam = findTeam(f.away);
+      const hStr = streakStr(hTeam);
+      const aStr = streakStr(aTeam);
+      if (!hStr && !aStr) continue;
+
+      const lg = f.league_name || "?";
+      if (!byLeague[lg]) byLeague[lg] = [];
+      byLeague[lg].push({ home: f.home, away: f.away, ts: f.timestamp, hStr, aStr });
+      totalMatches++;
+      if (hStr) totalTeams++;
+      if (aStr) totalTeams++;
+    }
+
+    if (!totalMatches) {
+      await sendMessage(chatId, "🔥 STREAK MATCHES (" + min + "+)\n📅 " + targetLabel + "\n\n❌ Streak match မ ရှိပါ", env);
+      return;
+    }
+
+    let text = "🔥 STREAK MATCHES (" + min + "+)\n";
+    text += "📅 " + targetLabel + "\n\n";
+
+    for (const lg in byLeague) {
+      text += "🏆 " + lg + "\n";
+      for (const m of byLeague[lg]) {
+        const timeMM = new Date(m.ts + MM_OFFSET).toISOString().slice(11, 16);
+        let line = "• " + m.home + " vs " + m.away + " [" + timeMM + "]\n";
+        if (m.hStr) line += "  🏠 " + m.home + ": " + m.hStr + "\n";
+        if (m.aStr) line += "  ✈️ " + m.away + ": " + m.aStr + "\n";
+        text += line;
+      }
+      text += "\n";
+    }
+
+    text += "Total: " + totalMatches + " matches / " + totalTeams + " teams";
+    if (text.length > 4000) text = text.slice(0, 4000) + "\n...";
 
     await sendMessage(chatId, text, env);
   } catch (e) {
     await sendMessage(chatId, "⚠️ Streak Matches error: " + e.message, env);
   }
-}
 
 function streakLine(label, s) {
   if (!s) return label + " : -\n";
