@@ -1,0 +1,8 @@
+name = "proud-violet-6126"
+main = "worker.js"
+compatibility_date = "2024-10-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "football-scanner"
+database_id = "697b96c3-b7e4-48ce-9014-a8c25a4fce78"
