@@ -52,7 +52,51 @@ export default {
       if (url.pathname === "/migrate-misc") return await handleMigrateMisc(request, env);
       if (url.pathname === "/migrate-analysis") return await handleMigrateAnalysis(request, env);
       if (url.pathname === "/migrate-meta") return await handleMigrateMeta(request, env);
-      if (url.pathname === "/db-stats") {
+      if (url.pathname === "/db-sync" && request.method === "POST") {
+  try {
+    const body = await request.json();
+    const rows = body.rows || [];
+    if (!rows.length) return new Response("OK: 0");
+    const stmt = env.DB.prepare(
+      "INSERT OR REPLACE INTO matches (fixture_id,date,timestamp,league_id,league_name,country,tier,season,round,type,status,home_id,home,away_id,away,ft_home,ft_away,ht_home,ht_away,fetched_at,ahh,b365ahh,b365aha,b365o25,b365u25) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    );
+    const batch = rows.map(r => stmt.bind(
+      r.fixture_id || "", r.date || "", r.timestamp || 0, r.league_id || 0, r.league_name || "",
+      r.country || "", r.tier || 0, String(r.season || ""), r.round || "", r.type || "",
+      r.status || "", r.home_id || 0, r.home || "", r.away_id || 0, r.away || "",
+      r.ft_home === "" ? null : r.ft_home, r.ft_away === "" ? null : r.ft_away,
+      r.ht_home === "" ? null : r.ht_home, r.ht_away === "" ? null : r.ht_away,
+      r.fetched_at || "",
+      r.ahh === "" ? null : r.ahh, r.b365ahh === "" ? null : r.b365ahh,
+      r.b365aha === "" ? null : r.b365aha, r.b365o25 === "" ? null : r.b365o25,
+      r.b365u25 === "" ? null : r.b365u25
+    ));
+    await env.DB.batch(batch);
+    return new Response("OK: " + rows.length);
+  } catch (e) {
+    return new Response("ERR: " + e.message, { status: 500 });
+  }
+}
+
+if (url.pathname === "/db-sync-ylog" && request.method === "POST") {
+  try {
+    const body = await request.json();
+    const rows = body.rows || [];
+    if (!rows.length) return new Response("OK: 0");
+    const stmt = env.DB.prepare(
+      "INSERT OR REPLACE INTO y_log (date, fixture_id, league, home, away, ft_home, ft_away, result, saved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    );
+    const batch = rows.map(r => stmt.bind(
+      r.date, r.fixture_id, r.league, r.home, r.away,
+      r.ft_home, r.ft_away, r.result, new Date().toISOString()
+    ));
+    await env.DB.batch(batch);
+    return new Response("OK: " + rows.length);
+  } catch (e) {
+    return new Response("ERR: " + e.message, { status: 500 });
+  }
+}
+      if(url.pathname === "/db-stats") {
         const n = await env.DB.prepare("SELECT COUNT(*) AS n FROM matches").first();
         return new Response(JSON.stringify({ ok: true, matches: n.n }), { headers: { "content-type": "application/json" } });
       }
