@@ -1448,14 +1448,9 @@ async function getStreaksCache(env) {
   } catch (e) {}
 
   try {
-    const seasonRow = await env.DB.prepare(
-      "SELECT season, COUNT(*) AS n FROM matches WHERE ft_home IS NOT NULL AND season IS NOT NULL GROUP BY season ORDER BY n DESC LIMIT 1"
-    ).first();
-    const season = seasonRow ? String(seasonRow.season) : "";
-
     const { results } = await env.DB.prepare(
-      "SELECT home_id, home, away_id, away, ft_home, ft_away, ahh, league_name, timestamp FROM matches WHERE season = ? AND ft_home IS NOT NULL ORDER BY timestamp DESC"
-    ).bind(season).all();
+  "SELECT home_id, home, away_id, away, ft_home, ft_away, ahh, league_name, timestamp FROM matches WHERE ft_home IS NOT NULL ORDER BY timestamp DESC LIMIT 10000"
+).all();
 
     if (!results || !results.length) return null;
 
@@ -1546,24 +1541,24 @@ async function getStreaksCache(env) {
 }
 
 function streakBadgeByName(teamName, streaks) {
-  if (!streaks || !streaks.teamStreaks || !teamName) return "";
+  if (!streaks || !streaks.teams || !teamName) return "";
   const norm = function(s) { return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); };
   const q = norm(teamName);
   if (!q) return "";
-  const keys = Object.keys(streaks.teamStreaks);
   let best = null;
-  for (let i = 0; i < keys.length; i++) {
-    const t = streaks.teamStreaks[keys[i]];
+  for (let i = 0; i < streaks.teams.length; i++) {
+    const t = streaks.teams[i];
     const n = norm(t.name);
     if (!n) continue;
     if (n === q) { best = t; break; }
     if (!best && (n.indexOf(q) >= 0 || q.indexOf(n) >= 0)) best = t;
   }
-  if (!best) return "";
+  if (!best || !best.streaks) return "";
   const parts = [];
-  if (best.ha) parts.push("HA:" + best.ha.type + best.ha.count);
-  if (best.ah) parts.push("AH:" + best.ah.type + best.ah.count);
-  if (best.ou) parts.push("O/U:" + best.ou.type + best.ou.count);
+  const s = best.streaks.overall || {};
+  if (s.ha) parts.push("HA:" + s.ha.value + s.ha.count);
+  if (s.ah) parts.push("AH:" + s.ah.value + s.ah.count);
+  if (s.ou) parts.push("O/U:" + s.ou.value + s.ou.count);
   return parts.join(",");
 }
 
