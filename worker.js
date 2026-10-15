@@ -50,6 +50,8 @@ export default {
       if (url.pathname === "/migrate") return await handleMigrate(request, env);
       if (url.pathname === "/migrate-all") return await handleMigrateAll(request, env);
       if (url.pathname === "/migrate-misc") return await handleMigrateMisc(request, env);
+      if (url.pathname === "/migrate-analysis") return await handleMigrateAnalysis(request, env);
+      if (url.pathname === "/migrate-meta") return await handleMigrateMeta(request, env);
       if (url.pathname === "/db-stats") {
         const n = await env.DB.prepare("SELECT COUNT(*) AS n FROM matches").first();
         return new Response(JSON.stringify({ ok: true, matches: n.n }), { headers: { "content-type": "application/json" } });
@@ -2244,3 +2246,70 @@ async function dbGetInferAliases(env) {
   for (const r of results || []) map[r.key] = r.value;
   return map;
                             }
+async function handleMigrateAnalysis(request, env) {
+  const out = await migrateAnalysis(env);
+  return new Response(JSON.stringify(out), { headers: { "content-type": "application/json" } });
+}
+
+async function handleMigrateMeta(request, env) {
+  const out = await migrateMeta(env);
+  return new Response(JSON.stringify(out), { headers: { "content-type": "application/json" } });
+}
+
+async function migrateAnalysis(env) {
+  try {
+    const res = await fetch(SHEET_URL + '?action=default', { redirect: 'follow' });
+    const data = await res.json();
+    if (!data || !data.ok || !data.matches || !data.matches.length) {
+      return { ok: false, error: 'no analysis rows' };
+    }
+    const stmt = env.DB.prepare(
+      "INSERT OR REPLACE INTO analysis (" +
+      "fixture_id, date, league, home, away, o25, " +
+      "overall_fair, ha_fair, ht_ratio, ht_stars, ht_latest3, " +
+      "own_ou, own_ha, own_ah, " +
+      "ov_ou, ov_ha, ov_ah, " +
+      "h_ou, h_ha, h_ah, " +
+      "a_ou, a_ha, a_ah, " +
+      "h2h_ou, h2h_ha, h2h_ah, note" +
+      ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    );
+    const batch = data.matches.map(r => stmt.bind(
+      String(r.id || ''), String(r.date || ''), String(r.league || ''),
+      String(r.home || ''), String(r.away || ''), String(r.o25 || ''),
+      (r.overallFair === '' || r.overallFair === undefined) ? null : Number(r.overallFair),
+      (r.haFair === '' || r.haFair === undefined) ? null : Number(r.haFair),
+      String(r.htRatio || ''), Number(r.htStars || 0), String(r.htLatest3 || ''),
+      String(r.ownOU || ''), String(r.ownHA || ''), String(r.ownAH || ''),
+      String(r.ovOU || ''), String(r.ovHA || ''), String(r.ovAH || ''),
+      String(r.hOU || ''), String(r.hHA || ''), String(r.hAH || ''),
+      String(r.aOU || ''), String(r.aHA || ''), String(r.aAH || ''),
+      String(r.h2hOU || ''), String(r.h2hHA || ''), String(r.h2hAH || ''),
+      String(r.note || '')
+    ));
+    await env.DB.batch(batch);
+    return { ok: true, inserted: data.matches.length };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+async function migrateMeta(env) {
+  try {
+    const res = await fetch(SHEET_URL + '?action=meta', { redirect: 'follow' });
+    const data = await res.json();
+    if (!data || !data.ok || !data.rows || !data.rows.length) {
+      return { ok: false, error: 'no meta rows' };
+    }
+    const stmt = env.DB.prepare(
+      "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)"
+    );
+    const batch = data.rows.map(r => stmt.bind(
+      String(r.key || ''), String(r.value ?? '')
+    ));
+    await env.DB.batch(batch);
+    return { ok: true, inserted: data.rows.length };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+    }
