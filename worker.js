@@ -68,6 +68,14 @@ export default {
         const { results } = await env.DB.prepare("SELECT date, home, away, ft_home, ft_away, result FROM y_log LIMIT 5").all();
         return new Response(JSON.stringify({ ok: true, rows: results }), { headers: { "content-type": "application/json" } });
       }
+      if (url.pathname === "/db-meta") {
+  const { results } = await env.DB.prepare("SELECT * FROM meta").all();
+  return new Response(JSON.stringify({ ok: true, meta: results }), { headers: { "content-type": "application/json" } });
+}
+if (url.pathname === "/db-analysis") {
+  const { results } = await env.DB.prepare("SELECT * FROM analysis").all();
+  return new Response(JSON.stringify({ ok: true, analysis: results }), { headers: { "content-type": "application/json" } });
+}
       if (request.method !== "POST") return new Response("Bot is running.");
       const update = await request.json();
       if (update.message) return await handleMessage(update.message, env);
