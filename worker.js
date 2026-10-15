@@ -96,6 +96,18 @@ if (url.pathname === "/db-sync-ylog" && request.method === "POST") {
     return new Response("ERR: " + e.message, { status: 500 });
   }
 }
+   if (url.pathname === "/db-sync-cups" && request.method === "POST") {
+  try {
+    const body = await request.json();
+    const rows = body.rows || [];
+    if (!rows.length) return new Response("OK: 0");
+    const stmt = env.DB.prepare(...);
+    ...
+    return new Response("OK: " + rows.length);
+  } catch (e) {
+    return new Response("ERR: " + e.message, { status: 500 });
+  }
+   }
       if(url.pathname === "/db-stats") {
         const n = await env.DB.prepare("SELECT COUNT(*) AS n FROM matches").first();
         return new Response(JSON.stringify({ ok: true, matches: n.n }), { headers: { "content-type": "application/json" } });
