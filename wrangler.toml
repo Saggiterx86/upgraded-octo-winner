@@ -6,3 +6,7 @@ compatibility_date = "2024-10-01"
 binding = "DB"
 database_name = "football-scanner"
 database_id = "697b96c3-b7e4-48ce-9014-a8c25a4fce78"
+
+[[kv_namespaces]]
+binding = "BOT_KV"
+id = "d5a162b1ffdf43e4ac324c16a840df09"
