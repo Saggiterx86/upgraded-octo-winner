@@ -101,8 +101,21 @@ if (url.pathname === "/db-sync-ylog" && request.method === "POST") {
     const body = await request.json();
     const rows = body.rows || [];
     if (!rows.length) return new Response("OK: 0");
-    const stmt = env.DB.prepare(...);
-    ...
+    const stmt = env.DB.prepare(
+  "INSERT OR REPLACE INTO matches (fixture_id,date,timestamp,league_id,league_name,country,tier,season,round,type,status,home_id,home,away_id,away,ft_home,ft_away,ht_home,ht_away,fetched_at,ahh,b365ahh,b365aha,b365o25,b365u25) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+);
+const batch = rows.map(r => stmt.bind(
+  r.fixture_id || "", r.date || "", r.timestamp || 0, r.league_id || 0, r.league_name || "",
+  r.country || "", r.tier || 0, String(r.season || ""), r.round || "", r.type || "",
+  r.status || "", r.home_id || 0, r.home || "", r.away_id || 0, r.away || "",
+  r.ft_home === "" ? null : r.ft_home, r.ft_away === "" ? null : r.ft_away,
+  r.ht_home === "" ? null : r.ht_home, r.ht_away === "" ? null : r.ht_away,
+  r.fetched_at || "",
+  r.ahh === "" ? null : r.ahh, r.b365ahh === "" ? null : r.b365ahh,
+  r.b365aha === "" ? null : r.b365aha, r.b365o25 === "" ? null : r.b365o25,
+  r.b365u25 === "" ? null : r.b365u25
+));
+await env.DB.batch(batch);
     return new Response("OK: " + rows.length);
   } catch (e) {
     return new Response("ERR: " + e.message, { status: 500 });
