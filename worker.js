@@ -1,4 +1,3 @@
-// D1 migration start
 // ============================================================
 // PART 1 — Constants + fetchInferOdds
 // ============================================================
@@ -94,6 +93,7 @@ async function handleAlert(request, env) {
   }
 }
 
+// ⚠️ PART 1B က fetchInferOdds ကို ဒီအောက်မှာ ဆက်ထည့်မယ်
 async function fetchInferOdds(env) {
   const key = env.SaggiterX_Bot;
   if (!key) { return 'no-key'; }
@@ -404,7 +404,6 @@ async function findInferForTeam(teamName, env) {
     return null;
   } catch (e) { return null; }
 }
-
 async function handleMessage(message, env) {
   const chatId = message.chat.id;
   const text = message.text || "";
@@ -812,10 +811,9 @@ async function sendStreaks(chatId, env) {
   try {
     let data = await getStreaksCache(env);
     if (!data) {
-      const res = await fetch(SHEET_URL + "?action=streaks", { redirect: "follow" });
-      data = JSON.parse(await res.text());
+      await sendMessage(chatId, "⚠️ Streaks မရပါ", env);
+      return;
     }
-    if (!data || !data.ok) { await sendMessage(chatId, "⚠️ Streaks မရပါ", env); return; }
 
     const allTeams = data.teams || [];
     const minStreak = data.minStreak || 4;
@@ -931,7 +929,6 @@ async function sendStreakMatches(chatId, env, minStreak) {
   try {
     const min = minStreak || 5;
 
-    // Target date (MM 6:30 rule)
     const MM_OFFSET = 6 * 3600 * 1000 + 30 * 60 * 1000;
     const nowMM = new Date(Date.now() + MM_OFFSET);
     const y = nowMM.getUTCFullYear(), m = nowMM.getUTCMonth(), d = nowMM.getUTCDate();
@@ -944,7 +941,6 @@ async function sendStreakMatches(chatId, env, minStreak) {
     const startTs = Date.UTC(targetDay.getUTCFullYear(), targetDay.getUTCMonth(), targetDay.getUTCDate(), 6, 30, 0) - MM_OFFSET;
     const endTs = startTs + 24 * 3600 * 1000;
 
-    // Query by timestamp range (06:30 MM → next 06:30 MM)
     const { results: fx } = await env.DB.prepare(
       "SELECT league_name, home, away, timestamp FROM matches WHERE timestamp >= ? AND timestamp < ? AND status = 'NS' ORDER BY league_name ASC, timestamp ASC"
     ).bind(startTs, endTs).all();
@@ -980,9 +976,9 @@ async function sendStreakMatches(chatId, env, minStreak) {
       const parts = [];
       const s = t.streaks;
       if (s.overall) {
-        if (s.overall.ou) parts.push("O/U:" + s.overall.ou.value + s.overall.ou.count);
-        if (s.overall.ha) parts.push("HA:" + s.overall.ha.value + s.overall.ha.count);
-        if (s.overall.ah) parts.push("AH:" + s.overall.ah.value + s.overall.ah.count);
+        if (s.overall.ou && s.overall.ou.count >= min) parts.push("O/U:" + s.overall.ou.value + s.overall.ou.count);
+        if (s.overall.ha && s.overall.ha.count >= min) parts.push("HA:" + s.overall.ha.value + s.overall.ha.count);
+        if (s.overall.ah && s.overall.ah.count >= min) parts.push("AH:" + s.overall.ah.value + s.overall.ah.count);
       }
       return parts.join(",");
     }
@@ -1032,7 +1028,13 @@ async function sendStreakMatches(chatId, env, minStreak) {
   } catch (e) {
     await sendMessage(chatId, "⚠️ Streak Matches error: " + e.message, env);
   }
-  
+}
+
+function streakLine(label, s) {
+  if (!s) return label + " : -\n";
+  return label + " : " + s.type + " " + s.count + " ဆက်\n";
+}
+
 async function sendTeamSearch(chatId, teamName, env) {
   if (!teamName) { await sendMessage(chatId, "❌ Format: /team Arsenal", env); return; }
   try {
@@ -1087,9 +1089,7 @@ async function sendTeamDetail(chatId, teamId, env, replyTo) {
     const recent = [];
     const homeL5 = [];
     const awayL5 = [];
-    const ouSeq = [];
-    const haSeq = [];
-    const ahSeq = [];
+    const ouSeq = [], haSeq = [], ahSeq = [];
 
     for (const m of all) {
       const isHome = String(m.home_id) === String(tid);
@@ -1098,26 +1098,15 @@ async function sendTeamDetail(chatId, teamId, env, replyTo) {
       if (isNaN(gf) || isNaN(ga)) continue;
 
       const rec = {
-        date: m.date,
-        home: m.home,
-        away: m.away,
-        fth: m.ft_home,
-        fta: m.ft_away,
-        hth: m.ht_home,
-        hta: m.ht_away,
+        date: m.date, home: m.home, away: m.away,
+        fth: m.ft_home, fta: m.ft_away, hth: m.ht_home, hta: m.ht_away,
         side: isHome ? "H" : "A",
-        ou: ouRes(gf, ga),
-        ah: ahRes(gf, ga, m.ahh),
-        ha: haRes(gf, ga)
+        ou: ouRes(gf, ga), ah: ahRes(gf, ga, m.ahh), ha: haRes(gf, ga)
       };
       if (recent.length < 5) recent.push(rec);
       if (isHome && homeL5.length < 5) homeL5.push(rec);
       if (!isHome && awayL5.length < 5) awayL5.push(rec);
-      if (ouSeq.length < 10) {
-        ouSeq.push(rec.ou);
-        haSeq.push(rec.ha);
-        ahSeq.push(rec.ah);
-      }
+      if (ouSeq.length < 10) { ouSeq.push(rec.ou); haSeq.push(rec.ha); ahSeq.push(rec.ah); }
     }
 
     const calcStreak = (seq) => {
@@ -1185,7 +1174,7 @@ async function sendTeamDetail(chatId, teamId, env, replyTo) {
   } catch (e) {
     await sendMessage(chatId, "⚠️ Team detail error: " + e.message, env);
   }
-  
+        }
 // ============================================================
 // PART 4A-1 — Menu + Helpers
 // ============================================================
@@ -1386,6 +1375,7 @@ async function findSheetAny(sheetData, home, away) {
   }
   return null;
 }
+
 async function getStreaksCache(env) {
   try {
     const raw = await env.BOT_KV.get("streaks:cache");
@@ -1408,7 +1398,7 @@ async function getStreaksCache(env) {
     if (!results || !results.length) return null;
 
     const MIN_STREAK = 4;
-    const ouRes = (gf, ga) => gf > ga ? "W" : gf < ga ? "L" : "D";
+    const ouRes = (gf, ga) => (gf + ga) > 2.5 ? "O" : (gf + ga) < 2.5 ? "U" : "?";
     const ahRes = (gf, ga, ahh) => {
       const h = Number(ahh);
       if (isNaN(h)) return "?";
@@ -1491,15 +1481,17 @@ async function getStreaksCache(env) {
     console.log("getStreaksCache D1 err: " + e.message);
     return null;
   }
+}
 
-  function streakBadgeByName(teamName, streaks) {
-  if (!streaks || !streaks.teams || !teamName) return "";
+function streakBadgeByName(teamName, streaks) {
+  if (!streaks || !streaks.teamStreaks || !teamName) return "";
   const norm = function(s) { return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); };
   const q = norm(teamName);
   if (!q) return "";
+  const keys = Object.keys(streaks.teamStreaks);
   let best = null;
-  for (let i = 0; i < streaks.teams.length; i++) {
-    const t = streaks.teams[i];
+  for (let i = 0; i < keys.length; i++) {
+    const t = streaks.teamStreaks[keys[i]];
     const n = norm(t.name);
     if (!n) continue;
     if (n === q) { best = t; break; }
@@ -1507,12 +1499,9 @@ async function getStreaksCache(env) {
   }
   if (!best) return "";
   const parts = [];
-  const s = best.streaks || {};
-  if (s.overall) {
-    if (s.overall.ha) parts.push("HA:" + s.overall.ha.value + s.overall.ha.count);
-    if (s.overall.ah) parts.push("AH:" + s.overall.ah.value + s.overall.ah.count);
-    if (s.overall.ou) parts.push("O/U:" + s.overall.ou.value + s.overall.ou.count);
-  }
+  if (best.ha) parts.push("HA:" + best.ha.type + best.ha.count);
+  if (best.ah) parts.push("AH:" + best.ah.type + best.ah.count);
+  if (best.ou) parts.push("O/U:" + best.ou.type + best.ou.count);
   return parts.join(",");
 }
 
@@ -1758,9 +1747,9 @@ async function showMatchDetail(chatId, lgCode, matchId, env, replyTo) {
   } catch (e) {
     await sendMessage(chatId, "⚠️ Match detail error: " + e.message, env);
   }
-}
+        }
 // ============================================================
-// PART 4B — refreshSheetCache + Tricks + Round Stats
+// PART 4B-1 — refreshSheetCache + Tricks + Round Stats + YResults
 // ============================================================
 
 async function refreshSheetCache(env) {
@@ -1778,20 +1767,6 @@ async function refreshSheetCache(env) {
 
     const apiData = JSON.parse(await (await fetch(SHEET_URL + "?action=apiusage", { redirect: "follow" })).text());
     if (apiData && apiData.ok) await env.BOT_KV.put("api:cache", JSON.stringify(apiData), { expirationTtl: 7200 });
-
-    try {
-      const streaksData = JSON.parse(await (await fetch(SHEET_URL + "?action=streaks", { redirect: "follow" })).text());
-      if (streaksData && streaksData.ok) {
-        await env.BOT_KV.put("streaks:cache", JSON.stringify({ ts: Date.now(), data: streaksData }), { expirationTtl: 1800 });
-      }
-    } catch (e) {}
-
-    try {
-      const aliasesData = JSON.parse(await (await fetch(SHEET_URL + "?action=inferalias", { redirect: "follow" })).text());
-      if (aliasesData && aliasesData.ok && aliasesData.aliases) {
-        await env.BOT_KV.put("infer:aliases", JSON.stringify({ ts: Date.now(), data: aliasesData.aliases }), { expirationTtl: 21600 });
-      }
-    } catch (e) {}
 
     return "OK:" + count;
   } catch (e) {
@@ -1866,7 +1841,7 @@ registerTrick(function theoryChampionshipOver(p) {
   const pass = isELC && bOk && tOk;
   let note = "";
   if (pass) note = "ဂိုးပေါင်းအပေါ်";
-  else if (!isELC) note = "Championship မဟုတ် (" + (p.leagueCode || "?") + ")";
+  else if (!isELC) note = "Championship မ ဟုတ် (" + (p.leagueCode || "?") + ")";
   else if (!bOk) note = "Body မကိုက် (" + b + ")";
   else note = "Total မကိုက် (" + p.total + ")";
   return { name: "Theory 4 — Championship Over", pass: pass, note: note };
@@ -1958,10 +1933,10 @@ async function sendRoundStats(chatId, env) {
   } catch (e) {
     await sendMessage(chatId, "⚠️ Round Stats error: " + e.message, env);
   }
+}
 
 async function sendYResults(chatId, env, dateParam) {
   try {
-    // Target date logic (MM 6:30 rule)
     const MM_OFFSET = 6 * 3600 * 1000 + 30 * 60 * 1000;
     const now = Date.now();
     const nowMM = new Date(now + MM_OFFSET);
@@ -1975,11 +1950,8 @@ async function sendYResults(chatId, env, dateParam) {
       const parts = dateParam.split("-");
       targetDay = new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10)));
     } else {
-      if (hh < 6) {
-        targetDay = new Date(Date.UTC(y, m, d - 1));
-      } else {
-        targetDay = new Date(Date.UTC(y, m, d));
-      }
+      if (hh < 6) targetDay = new Date(Date.UTC(y, m, d - 1));
+      else targetDay = new Date(Date.UTC(y, m, d));
     }
 
     const startTs = Date.UTC(targetDay.getUTCFullYear(), targetDay.getUTCMonth(), targetDay.getUTCDate(), 6, 30, 0) - MM_OFFSET;
@@ -2020,9 +1992,9 @@ async function sendYResults(chatId, env, dateParam) {
   } catch (e) {
     await sendMessage(chatId, "⚠️ Y Results error: " + e.message, env);
   }
-
-  // ============================================================
-// MIGRATION + D1 HELPERS
+        }
+// ============================================================
+// PART 4B-2 — Migration + D1 Helpers
 // ============================================================
 
 async function handleMigrate(request, env) {
@@ -2030,7 +2002,6 @@ async function handleMigrate(request, env) {
     const url = new URL(request.url);
     const offset = parseInt(url.searchParams.get("offset") || "0", 10);
     const limit = parseInt(url.searchParams.get("limit") || "500", 10);
-    const SHEET_URL = env.SHEET_URL;
     const apiUrl = SHEET_URL + "?action=cachematches&offset=" + offset + "&limit=" + limit;
 
     const res = await fetch(apiUrl);
@@ -2041,7 +2012,7 @@ async function handleMigrate(request, env) {
     if (!rows.length) return new Response(JSON.stringify({ ok: true, inserted: 0, total: json.total, offset }));
 
     const stmt = env.DB.prepare(
-      "INSERT OR REPLACE INTO matches (fixture_id,date,timestamp,league_id,league_name,country,tier,season,round,type,status,home_id,home,away_id,away,ft_home,ft_away,ht_home,ht_away,venue_id,venue_name,neutral,fetched_at,ahh,b365ahh,b365aha,b365o25,b365u25) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+      "INSERT OR REPLACE INTO matches (fixture_id,date,timestamp,league_id,league_name,country,tier,season,round,type,status,home_id,home,away_id,away,ft_home,ft_away,ht_home,ht_away,fetched_at,ahh,b365ahh,b365aha,b365o25,b365u25) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
     );
 
     const batch = rows.map(r => stmt.bind(
@@ -2050,7 +2021,7 @@ async function handleMigrate(request, env) {
       r.status || "", r.home_id || 0, r.home || "", r.away_id || 0, r.away || "",
       r.ft_home === "" ? null : r.ft_home, r.ft_away === "" ? null : r.ft_away,
       r.ht_home === "" ? null : r.ht_home, r.ht_away === "" ? null : r.ht_away,
-      r.venue_id || "", r.venue_name || "", r.neutral || "", r.fetched_at || "",
+      r.fetched_at || "",
       r.ahh === "" ? null : r.ahh, r.b365ahh === "" ? null : r.b365ahh,
       r.b365aha === "" ? null : r.b365aha, r.b365o25 === "" ? null : r.b365o25,
       r.b365u25 === "" ? null : r.b365u25
@@ -2067,7 +2038,6 @@ async function handleMigrate(request, env) {
 }
 
 async function handleMigrateAll(request, env) {
-  const SHEET_URL = env.SHEET_URL;
   const CHUNK = 500;
   const url = new URL(request.url);
   let offset = parseInt(url.searchParams.get("offset") || "0", 10);
@@ -2088,7 +2058,7 @@ async function handleMigrateAll(request, env) {
       if (!rows.length) break;
 
       const stmt = env.DB.prepare(
-        "INSERT OR REPLACE INTO matches (fixture_id,date,timestamp,league_id,league_name,country,tier,season,round,type,status,home_id,home,away_id,away,ft_home,ft_away,ht_home,ht_away,venue_id,venue_name,neutral,fetched_at,ahh,b365ahh,b365aha,b365o25,b365u25) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        "INSERT OR REPLACE INTO matches (fixture_id,date,timestamp,league_id,league_name,country,tier,season,round,type,status,home_id,home,away_id,away,ft_home,ft_away,ht_home,ht_away,fetched_at,ahh,b365ahh,b365aha,b365o25,b365u25) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
       );
 
       const batch = rows.map(r => stmt.bind(
@@ -2097,7 +2067,7 @@ async function handleMigrateAll(request, env) {
         r.status || "", r.home_id || 0, r.home || "", r.away_id || 0, r.away || "",
         r.ft_home === "" ? null : r.ft_home, r.ft_away === "" ? null : r.ft_away,
         r.ht_home === "" ? null : r.ht_home, r.ht_away === "" ? null : r.ht_away,
-        r.venue_id || "", r.venue_name || "", r.neutral || "", r.fetched_at || "",
+        r.fetched_at || "",
         r.ahh === "" ? null : r.ahh, r.b365ahh === "" ? null : r.b365ahh,
         r.b365aha === "" ? null : r.b365aha, r.b365o25 === "" ? null : r.b365o25,
         r.b365u25 === "" ? null : r.b365u25
@@ -2117,7 +2087,6 @@ async function handleMigrateAll(request, env) {
 }
 
 async function handleMigrateMisc(request, env) {
-  const SHEET_URL = env.SHEET_URL;
   const results = {};
 
   try {
@@ -2199,6 +2168,18 @@ async function handleMigrateMisc(request, env) {
       } else results.line_archive = 0;
     }
 
+    // 6. meta
+    {
+      const r = await fetch(SHEET_URL + "?action=meta");
+      const j = await r.json();
+      if (j.ok && j.rows.length) {
+        const stmt = env.DB.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)");
+        const batch = j.rows.map(x => stmt.bind(x.key || "", x.value || ""));
+        await env.DB.batch(batch);
+        results.meta = j.rows.length;
+      } else results.meta = 0;
+    }
+
     return new Response(JSON.stringify({ ok: true, results }), { headers: { "content-type": "application/json" } });
   } catch (e) {
     return new Response(JSON.stringify({ ok: false, err: e.message, results }), { status: 500, headers: { "content-type": "application/json" } });
@@ -2262,4 +2243,4 @@ async function dbGetInferAliases(env) {
   const map = {};
   for (const r of results || []) map[r.key] = r.value;
   return map;
-        }
+                            }
