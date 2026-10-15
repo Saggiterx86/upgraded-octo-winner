@@ -14,7 +14,7 @@ const LEAGUES = [
   { code: "FL1", name: "Ligue 1", flag: "🇫🇷" }
 ];
 
-const SIX_LEAGUE_NAMES = ["premier league", "championship", "la liga", "bundesliga", "serie a", "ligue 1"];
+const SIX_LEAGUE_NAMES = ["premier league", "championship", "la liga", "bundesliga", "serie a", "ligue 1", "champions league"];
 
 const INFER_LEAGUES = {
   'lg_T9268DXK': 'Premier League',
