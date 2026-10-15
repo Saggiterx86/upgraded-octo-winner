@@ -1450,7 +1450,7 @@ async function getStreaksCache(env) {
 
   try {
     const { results } = await env.DB.prepare(
-  "SELECT home_id, home, away_id, away, ft_home, ft_away, ahh, league_name, timestamp FROM matches WHERE ft_home IS NOT NULL ORDER BY timestamp DESC LIMIT 10000"
+  "SELECT home_id, home, away_id, away, ft_home, ft_away, ahh, league_name, timestamp FROM matches WHERE ft_home IS NOT NULL ORDER BY timestamp DESC LIMIT 3000"
 ).all();
 
     if (!results || !results.length) return null;
