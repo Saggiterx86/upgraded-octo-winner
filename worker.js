@@ -1528,7 +1528,7 @@ async function getStreaksCache(env) {
       updated: new Date().toISOString(),
       minStreak: MIN_STREAK,
       totalRows: results.length,
-      season: season,
+      season: "",
       teams: teams,
       leagues: []
     };
