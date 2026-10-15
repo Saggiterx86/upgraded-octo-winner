@@ -472,10 +472,11 @@ async function handleMessage(message, env) {
   if (String(chatId) !== OWNER_ID) return new Response("OK");
   if (text === "/start") { await sendMainMenu(chatId, env); return new Response("OK"); }
   if (text === "/refresh") {
-    await sendMessage(chatId, "⏳ Refresh...", env);
-    const r1 = await refreshSheetCache(env);
-    await sendMessage(chatId, "📋 Sheet: " + r1, env);
-    return new Response("OK");
+  await sendMessage(chatId, "⏳ Refresh...", env);
+  await env.BOT_KV.delete("streaks:cache");
+  const r1 = await refreshSheetCache(env);
+  await sendMessage(chatId, "📋 Sheet: " + r1 + "\n🔄 Streaks cache cleared", env);
+  return new Response("OK");
   }
   if (text === "/audit") { await sendAudit(chatId, env); return new Response("OK"); }
   if (text === "/apiusage") { await sendApiUsage(chatId, env); return new Response("OK"); }
