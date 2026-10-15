@@ -2321,3 +2321,64 @@ async function migrateMeta(env) {
     return { ok: false, error: e.message };
   }
     }
+  // ============================================================
+// STEP 2 — D1 Helpers (9)
+// ============================================================
+
+async function dbGetAllAnalysis(env) {
+  const { results } = await env.DB.prepare("SELECT * FROM analysis").all();
+  return results || [];
+}
+
+async function dbGetAnalysis(env, fixtureId) {
+  return await env.DB.prepare("SELECT * FROM analysis WHERE fixture_id = ?").bind(fixtureId).first();
+}
+
+async function dbGetMeta(env, key) {
+  const row = await env.DB.prepare("SELECT value FROM meta WHERE key = ?").bind(key).first();
+  return row ? row.value : null;
+}
+
+async function dbSetMeta(env, key, value) {
+  await env.DB.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)").bind(key, value).run();
+}
+
+async function dbGetLineArchive(env, filter) {
+  let q = "SELECT * FROM line_archive";
+  let binds = [];
+  if (filter && filter.date) { q += " WHERE date = ?"; binds.push(filter.date); }
+  q += " ORDER BY date DESC LIMIT 100";
+  const stmt = binds.length ? env.DB.prepare(q).bind(...binds) : env.DB.prepare(q);
+  const { results } = await stmt.all();
+  return results || [];
+}
+
+async function dbInsertLineArchive(env, rows) {
+  if (!rows || !rows.length) return 0;
+  const stmt = env.DB.prepare(
+    "INSERT OR REPLACE INTO line_archive (id, date, league, home, away, kickoff, open_ah, cur_ah, open_total, cur_total, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  );
+  const batch = rows.map(r => stmt.bind(
+    r.id, r.date, r.league, r.home, r.away, r.kickoff,
+    r.open_ah, r.cur_ah, r.open_total, r.cur_total, r.fetched_at
+  ));
+  await env.DB.batch(batch);
+  return rows.length;
+}
+
+async function dbGetTeamAlias(env) {
+  const { results } = await env.DB.prepare("SELECT * FROM team_alias").all();
+  return results || [];
+}
+
+async function dbGetInferAlias(env) {
+  const { results } = await env.DB.prepare("SELECT * FROM infer_alias").all();
+  const map = {};
+  for (const r of results || []) map[r.key] = r.value;
+  return map;
+}
+
+async function dbGetLeagueMap(env) {
+  const { results } = await env.DB.prepare("SELECT * FROM league_map").all();
+  return results || [];
+}
