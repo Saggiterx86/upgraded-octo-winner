@@ -120,6 +120,16 @@ if (url.pathname === "/db-analysis") {
   const { results } = await env.DB.prepare("SELECT * FROM analysis").all();
   return new Response(JSON.stringify({ ok: true, analysis: results }), { headers: { "content-type": "application/json" } });
 }
+  }                                                    ← Line 122 (ပိတ်ကွင်း)
+if (url.pathname === "/db-team") {                    ← ဒီနေရာ ထည့်
+  const name = url.searchParams.get("name") || "";
+  const like = "%" + name.toLowerCase() + "%";
+  const { results } = await env.DB.prepare(
+    "SELECT fixture_id, date, timestamp, home, away, ft_home, ft_away, ahh, league_name FROM matches WHERE LOWER(home) LIKE ? OR LOWER(away) LIKE ? ORDER BY timestamp DESC LIMIT 15"
+  ).bind(like, like).all();
+  return new Response(JSON.stringify({ ok: true, name, rows: results }), { headers: { "content-type": "application/json" } });
+}                                                     ← ဒီမှာ ပိတ်
+if (request.method !== "POST") return new Response(...)  ← Line 123
       if (request.method !== "POST") return new Response("Bot is running.");
       const update = await request.json();
       if (update.message) return await handleMessage(update.message, env);
