@@ -508,6 +508,57 @@ async function handleMessage(message, env) {
   if (text === "/roundstats") { await sendRoundStats(chatId, env); return new Response("OK"); }
   if (text === "/streakmatches") { await sendStreakMatches(chatId, env, 5); return new Response("OK"); }
   if (text === "/streaks") { await sendStreaks(chatId, env); return new Response("OK"); }
+  if (text === "/vs") {
+  await sendMessage(chatId, "🆚 A vs B\n\nData ဖြည့်ပါ (9 lines):\n1. A ov L5\n2. B ov L5\n3. A home L5\n4. B away L5\n5. Home HT\n6. Away HT\n7. H2H HT\n8. Body\n9. Total", env);
+  return new Response("OK");
+}
+if (text.startsWith("/vs ")) {
+  var vsLines = text.slice(4).trim().split("\n").map(function(x) { return x.trim(); }).filter(function(x) { return x; });
+  if (vsLines.length < 9) {
+    await sendMessage(chatId, "❌ 9 lines လိုတယ် — " + vsLines.length + " lines ပဲ ရတယ်", env);
+    return new Response("OK");
+  }
+  var aOvr = Number(vsLines[0]) || 0;
+  var bOvr = Number(vsLines[1]) || 0;
+  var aHome = Number(vsLines[2]) || 0;
+  var bAway = Number(vsLines[3]) || 0;
+  var homeHT = Number(vsLines[4]) || 0;
+  var awayHT = Number(vsLines[5]) || 0;
+  var h2hHT = Number(vsLines[6]) || 0;
+  var bodyLine = vsLines[7] || "";
+  var totalLine = vsLines[8] || "";
+
+  var ovFair = (aOvr + bOvr) / 10;
+  var haFair = (aHome + bAway) / 10;
+  var yPass = (ovFair > 2.5 && haFair > 2.5);
+  var htTotal = homeHT + awayHT + h2hHT;
+  var htPass = (htTotal >= 9);
+
+  var bodyArr = ["1+20", "1+10", "1=", "1-10", "1-20"];
+  var totalArr = ["3+20", "3+10", "3=", "3-10", "3-20"];
+  var bodyHit = false, totalHit = false;
+  for (var bi = 0; bi < bodyArr.length; bi++) {
+    if (bodyLine.indexOf(bodyArr[bi]) >= 0) { bodyHit = true; break; }
+  }
+  for (var ti = 0; ti < totalArr.length; ti++) {
+    if (totalLine.indexOf(totalArr[ti]) >= 0) { totalHit = true; break; }
+  }
+  var formulaPass = (bodyHit && totalHit);
+
+  var out = "🆚 A vs B\n\n";
+  out += "📈 Y (O2.5)\n";
+  out += "Overall Fair: " + ovFair.toFixed(2) + (ovFair > 2.5 ? " ✅" : " ❌") + "\n";
+  out += "HA Fair: " + haFair.toFixed(2) + (haFair > 2.5 ? " ✅" : " ❌") + "\n";
+  out += "→ " + (yPass ? "⭐ PASS" : "⭐ FAIL") + "\n\n";
+  out += "📈 HT Ratio\n";
+  out += htTotal + "/15 → " + (htPass ? "⭐ PASS" : "⭐ FAIL") + "\n\n";
+  out += "🎯 Body/Total\n";
+  out += bodyLine + " | " + totalLine + "\n";
+  out += "→ " + (formulaPass ? "အောက်သင်း ဂိုးသွင်းနိုင်ပဲ" : "အောက်သင်း ဂိုးသွင်းနိုင် မ ဟုတ်");
+
+  await sendMessage(chatId, out, env);
+  return new Response("OK");
+}
   if (text === "/results") { await sendYResults(chatId, env, ""); return new Response("OK"); }
   if (text.startsWith("/results ")) {
     var d = text.slice(9).trim();
