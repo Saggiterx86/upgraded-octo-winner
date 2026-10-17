@@ -121,6 +121,38 @@ await env.DB.batch(batch);
     return new Response("ERR: " + e.message, { status: 500 });
   }
    }
+      // ============================================================
+// ✅ D1 CLEANUP ROUTE (Delete matches older than N days)
+// ============================================================
+if (url.pathname === "/db-cleanup" && request.method === "POST") {
+  try {
+    const body = await request.json();
+    const days = Number(body.days) || 180; // Default 180 days
+    const now = Date.now();
+    const cutoff = now - (days * 24 * 3600 * 1000);
+
+    // Fetch count before delete for reporting
+    const beforeCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM matches").first();
+
+    // Execute delete
+    const stmt = env.DB.prepare("DELETE FROM matches WHERE timestamp < ?").bind(cutoff);
+    const res = await stmt.run();
+
+    const afterCount = await env.DB.prepare("SELECT COUNT(*) AS n FROM matches").first();
+
+    return new Response(JSON.stringify({
+      ok: true,
+      deleted: res.meta.changes,
+      days: days,
+      cutoff: new Date(cutoff).toISOString(),
+      before: beforeCount ? beforeCount.n : 0,
+      after: afterCount ? afterCount.n : 0
+    }), { headers: { "content-type": "application/json" } });
+
+  } catch (e) {
+    return new Response("ERR: " + e.message, { status: 500 });
+  }
+}
       if(url.pathname === "/db-stats") {
         const n = await env.DB.prepare("SELECT COUNT(*) AS n FROM matches").first();
         return new Response(JSON.stringify({ ok: true, matches: n.n }), { headers: { "content-type": "application/json" } });
