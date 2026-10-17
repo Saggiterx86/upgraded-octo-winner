@@ -467,8 +467,14 @@ async function findInferForTeam(teamName, env) {
       const raw = await env.BOT_KV.get(k.name);
       if (!raw) continue;
       const d = JSON.parse(raw);
-      const infHome = String(d.home || '').toLowerCase().trim();
-      const infAway = String(d.away || '').toLowerCase().trim();
+
+// ✅ NEW: ပွဲပြီးသွားတဲ့ ဈေးကွက်ဟောင်းတွေကို လုံးဝ ကျော်သွားစေရန် (လက်ရှိအချိန်ထက် ကြီးတဲ့ပွဲကိုပဲ ယူမယ်)
+const now = Date.now();
+const schedTs = Date.parse(d.scheduled_at || '');
+if (isNaN(schedTs) || schedTs <= now) continue;
+
+const infHome = String(d.home || '').toLowerCase().trim();
+const infAway = String(d.away || '').toLowerCase().trim();
       const infHomeTarget = aliasTargets[infHome] || d.home;
       const infAwayTarget = aliasTargets[infAway] || d.away;
       if (exactNameMatch(infHomeTarget, teamName) || exactNameMatch(infAwayTarget, teamName) ||
@@ -1231,11 +1237,14 @@ async function sendTeamDetail(chatId, teamId, env, replyTo) {
     const ouSeq = [], haSeq = [], ahSeq = [];
 
     for (const m of all) {
-      const isHome = String(m.home_id) === String(tid);
-      const gf = isHome ? Number(m.ft_home) : Number(m.ft_away);
-      const ga = isHome ? Number(m.ft_away) : Number(m.ft_home);
-      if (isNaN(gf) || isNaN(ga)) continue;
+  // ✅ NEW: NS နဲ့ ရလဒ်မရှိသေးတဲ့ပွဲတွေကို လုံးဝ ကျော်သွားစေရန်
+  if (m.status === 'NS' || m.ft_home === null || m.ft_away === null || m.ft_home === "" || m.ft_away === "") continue;
 
+  const isHome = String(m.home_id) === String(tid);
+  const gf = isHome ? Number(m.ft_home) : Number(m.ft_away);
+  const ga = isHome ? Number(m.ft_away) : Number(m.ft_home);
+  if (isNaN(gf) || isNaN(ga)) continue;
+      
       const rec = {
         date: m.date, home: m.home, away: m.away,
         fth: m.ft_home, fta: m.ft_away, hth: m.ht_home, hta: m.ht_away,
