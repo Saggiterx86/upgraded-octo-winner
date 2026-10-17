@@ -486,10 +486,11 @@ const infAway = String(d.away || '').toLowerCase().trim();
         candidates.push({ id: id, exact: false, scheduled: d.scheduled_at || '' });
       }
     }
-    candidates.sort(function(a, b) {
-      if (a.exact !== b.exact) return a.exact ? -1 : 1;
-      return String(b.scheduled).localeCompare(String(a.scheduled));
-    });
+    // ✅ NEW: အနီးဆုံးပွဲကို အရင်ပြရန် (Ascending Sort)
+candidates.sort(function(a, b) {
+  if (a.exact !== b.exact) return a.exact ? -1 : 1;
+  return String(a.scheduled).localeCompare(String(b.scheduled));
+});
     for (const c of candidates) {
       const f = await evalFormula(c.id, env);
       if (f) return f;
