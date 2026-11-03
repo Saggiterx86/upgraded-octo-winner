@@ -423,7 +423,7 @@ async function importCsv(request, env) {
 }
 
 // ============================================================
-// INFER SPORTS MAPPING (Line Movement Tracking)
+// INFER SPORTS MAPPING (Alias Matching: CSV <-> API)
 // ============================================================
 async function syncInferOdds(env) {
   try {
@@ -433,7 +433,6 @@ async function syncInferOdds(env) {
       return;
     }
 
-    // ၃ ရက်ကြိုကနေ ၇ ရက်အတွင်း ရှိတဲ့ပွဲစဉ်တွေကို ယူမယ်
     const now = Date.now();
     const winStart = now - 3 * 24 * 3600 * 1000;
     const winEnd = now + 7 * 24 * 3600 * 1000;
@@ -475,25 +474,34 @@ async function syncInferOdds(env) {
           const ts = Date.parse(ev.scheduled_at);
           if (isNaN(ts) || ts < winStart || ts > winEnd) continue;
 
-          const homeTeam = ev.home_team?.name || "";
-          const awayTeam = ev.away_team?.name || "";
-          if (!homeTeam || !awayTeam) continue;
+          const apiHome = ev.home_team?.name || "";
+          const apiAway = ev.away_team?.name || "";
+          if (!apiHome || !apiAway) continue;
 
-          // Database ထဲမှာ ဒီပွဲစဉ် ရှိမရှိ ရှာမယ်
+          // 1. team_alias ထဲမှာ InferSports နာမည် (api_name) နဲ့ ရှာပြီး CSV နာမည် (csv_name) ကို ယူမယ်
+          // (Table Column နာမည်တွေက api_name နဲ့ csv_name ဖြစ်တယ်လို့ ယူဆထားပါတယ်)
+          const homeAlias = await env.DB.prepare("SELECT csv_name FROM team_alias WHERE LOWER(api_name) = ?").bind(apiHome.toLowerCase()).first();
+          const awayAlias = await env.DB.prepare("SELECT csv_name FROM team_alias WHERE LOWER(api_name) = ?").bind(apiAway.toLowerCase()).first();
+          
+          // Alias မရှိရင် API နာမည်အတိုင်းပဲ သုံးမယ်
+          const searchHome = homeAlias ? homeAlias.csv_name : apiHome;
+          const searchAway = awayAlias ? awayAlias.csv_name : apiAway;
+
+          // 2. Database (matches) ထဲမှာ ရှာမယ်
           const { results } = await env.DB.prepare(
             `SELECT fixture_id FROM matches 
              WHERE season = '2627' 
              AND (LOWER(home) LIKE ? OR LOWER(home) LIKE ?) 
              AND (LOWER(away) LIKE ? OR LOWER(away) LIKE ?)`
           ).bind(
-            `%${homeTeam.toLowerCase()}%`, `%${homeTeam.toLowerCase().split(' ')[0]}%`,
-            `%${awayTeam.toLowerCase()}%`, `%${awayTeam.toLowerCase().split(' ')[0]}%`
+            `%${searchHome.toLowerCase()}%`, `%${apiHome.toLowerCase().split(' ')[0]}%`,
+            `%${searchAway.toLowerCase()}%`, `%${apiAway.toLowerCase().split(' ')[0]}%`
           ).all();
 
           if (results && results.length > 0) {
             const fixtureId = results[0].fixture_id;
             
-            // Odds တွေကို ဆွဲမယ်
+            // Odds ဆွဲမယ်
             const oddsRes = await fetch("https://api.infersports.dev/v1/odds/batch", {
               method: "POST",
               headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
@@ -521,24 +529,23 @@ async function syncInferOdds(env) {
                   if (o.market_type === 'totals' && totalLine === null) totalLine = o.line;
                 }
 
-                // ၁. History သိမ်းဖို့ အတွက် နောက်ဆုံးသိမ်းထားတဲ့ လိုင်းကို အရင်စစ်မယ်
+                // Line ကွာခြားမှုရှိမှ သိမ်းမယ်
                 const lastOdds = await env.DB.prepare(
                   "SELECT current_json FROM infer_odds WHERE event_id = ? ORDER BY fetched_at DESC LIMIT 1"
                 ).bind(ev.id).first();
 
-                // ၂. လိုင်းကွာခြားမှုရှိမှ ဒေတာအသစ် သိမ်းမယ်
                 if (!lastOdds || lastOdds.current_json !== oddsJson) {
                   await env.DB.prepare(`
                     INSERT INTO infer_odds
                     (event_id, league_id, league_name, home, away, scheduled_at, open_json, current_json, fetched_at)
                     VALUES (?,?,?,?,?,?,?,?,?)
                   `).bind(
-                    ev.id, lgId, lgName, homeTeam, awayTeam, ev.scheduled_at,
+                    ev.id, lgId, lgName, apiHome, apiAway, ev.scheduled_at,
                     oddsJson, oddsJson, new Date().toISOString()
                   ).run();
                 }
 
-                // ၃. matches table ကို နောက်ဆုံး Line နဲ့ Update လုပ်မယ်
+                // matches table ကို update လုပ်မယ်
                 if (ahLine !== null || totalLine !== null) {
                   await env.DB.prepare(
                     `UPDATE matches SET ahh = COALESCE(?, ahh), total_line = COALESCE(?, total_line) WHERE fixture_id = ?`
@@ -546,6 +553,9 @@ async function syncInferOdds(env) {
                 }
               }
             }
+          } else {
+             // မကိုက်ညီတဲ့ ပွဲစဉ်တွေကို Log ထုတ်ပြမယ်
+             console.log(`Unmatched: ${apiHome} vs ${apiAway}`);
           }
         }
       } catch (e) {
@@ -556,7 +566,6 @@ async function syncInferOdds(env) {
     console.error("syncInferOdds error:", e.message);
   }
 }
-
 // ============================================================
 // AUTO FETCH FIXTURES (Cron Job)
 // ============================================================
