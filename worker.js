@@ -480,11 +480,9 @@ async function syncInferOdds(env) {
 
           // Database ထဲမှာ ဒီပွဲစဉ် ရှိမရှိ ရှာမယ်
           const dt = new Date(ts);
-          const dateStr = fmtDate(dt);
-          
           const { results } = await env.DB.prepare(
-            "SELECT fixture_id FROM matches WHERE date = ? AND (LOWER(home) LIKE ? OR LOWER(away) LIKE ?)"
-          ).bind(dateStr, `%${homeTeam.toLowerCase()}%`, `%${awayTeam.toLowerCase()}%`).all();
+  "SELECT fixture_id FROM matches WHERE season = '2627' AND LOWER(home) LIKE ? AND LOWER(away) LIKE ?"
+).bind(`%${homeTeam.toLowerCase()}%`, `%${awayTeam.toLowerCase()}%`).all();
 
           if (results && results.length > 0) {
             const fixtureId = results[0].fixture_id;
