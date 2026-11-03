@@ -478,15 +478,28 @@ async function syncInferOdds(env) {
           const awayTeam = ev.away_team?.name || "";
           if (!homeTeam || !awayTeam) continue;
 
-          // Database ထဲမှာ ဒီပွဲစဉ် ရှိမရှိ ရှာမယ်
-          const dt = new Date(ts);
+          // 1. Team Alias ကို အရင်စစ်မယ်
+          const homeAlias = await env.DB.prepare("SELECT infer_name FROM team_alias WHERE csv_name = ?").bind(homeTeam).first();
+          const awayAlias = await env.DB.prepare("SELECT infer_name FROM team_alias WHERE csv_name = ?").bind(awayTeam).first();
+          
+          const searchHome = homeAlias ? homeAlias.infer_name : homeTeam;
+          const searchAway = awayAlias ? awayAlias.infer_name : awayTeam;
+
+          // 2. Database ထဲမှာ ဒီပွဲစဉ် ရှိမရှိ ရှာမယ် (ရက်စွဲ မပါဘဲ အသင်းနာမည်ပဲ သုံးမယ်)
           const { results } = await env.DB.prepare(
-  "SELECT fixture_id FROM matches WHERE season = '2627' AND LOWER(home) LIKE ? AND LOWER(away) LIKE ?"
-).bind(`%${homeTeam.toLowerCase()}%`, `%${awayTeam.toLowerCase()}%`).all();
+            `SELECT fixture_id FROM matches 
+             WHERE season = '2627' 
+             AND (LOWER(home) LIKE ? OR LOWER(home) LIKE ?) 
+             AND (LOWER(away) LIKE ? OR LOWER(away) LIKE ?)`
+          ).bind(
+            `%${searchHome.toLowerCase()}%`, `%${homeTeam.toLowerCase()}%`,
+            `%${searchAway.toLowerCase()}%`, `%${awayTeam.toLowerCase()}%`
+          ).all();
 
           if (results && results.length > 0) {
             const fixtureId = results[0].fixture_id;
             
+            // 3. Odds တွေကို ဆွဲမယ်
             const oddsRes = await fetch("https://api.infersports.dev/v1/odds/batch", {
               method: "POST",
               headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
@@ -501,9 +514,26 @@ async function syncInferOdds(env) {
             if (oddsRes.ok) {
               const oddsData = await oddsRes.json();
               const entry = oddsData.data?.[0];
+              
               if (entry && entry.odds) {
-                const oddsJson = JSON.stringify(entry.odds.odds || []);
+                const rawOdds = entry.odds.odds || [];
+                const oddsJson = JSON.stringify(rawOdds);
                 
+                // 4. Line တွေကို ဆွဲထုတ်မယ် (ahh နဲ့ total_line)
+                let ahLine = null;
+                let totalLine = null;
+
+                for (const o of rawOdds) {
+                  // Pinnacle ကို ဦးစားပေး (မရှိရင် ပထမဆုံးတစ်ခု)
+                  if (o.market_type === 'asian_handicap' && !ahLine) {
+                    ahLine = o.line;
+                  }
+                  if (o.market_type === 'totals' && !totalLine) {
+                    totalLine = o.line;
+                  }
+                }
+
+                // infer_odds ထဲ ထည့်မယ်
                 await env.DB.prepare(`
                   INSERT INTO infer_odds
                   (event_id, league_id, league_name, home, away, scheduled_at, open_json, current_json, fetched_at)
@@ -512,16 +542,16 @@ async function syncInferOdds(env) {
                     current_json = excluded.current_json,
                     fetched_at = excluded.fetched_at
                 `).bind(
-                  ev.id,
-                  lgId,
-                  lgName,
-                  homeTeam,
-                  awayTeam,
-                  ev.scheduled_at,
-                  oddsJson,
-                  oddsJson,
-                  new Date().toISOString()
+                  ev.id, lgId, lgName, homeTeam, awayTeam, ev.scheduled_at,
+                  oddsJson, oddsJson, new Date().toISOString()
                 ).run();
+
+                // 5. matches table ကို Line တွေ သွားပြင်မယ်
+                if (ahLine !== null || totalLine !== null) {
+                  await env.DB.prepare(
+                    `UPDATE matches SET ahh = COALESCE(?, ahh), total_line = COALESCE(?, total_line) WHERE fixture_id = ?`
+                  ).bind(ahLine, totalLine, fixtureId).run();
+                }
               }
             }
           }
