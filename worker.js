@@ -422,9 +422,9 @@ async function importCsv(request, env) {
   return new Response(JSON.stringify({ ok: true, inserted: rows.length }), { headers: { "content-type": "application/json" } });
 }
 // ============================================================
-// INFER SPORTS MAPPING (Single League Sync - No Timeout)
+// INFER SPORTS MAPPING (Parallel Sync - No Timeout)
 // ============================================================
-async function syncInferOdds(env, targetLeagueId = null) {
+async function syncInferOdds(env) {
   try {
     const key = env.SaggiterX_Bot || env.INFER_KEY;
     if (!key) return;
@@ -444,20 +444,14 @@ async function syncInferOdds(env, targetLeagueId = null) {
       'lg_FA2KCTA5': 'Jupiler Pro League', 'lg_HB26EKC0': 'Primeira Liga'
     };
 
-    // တစ်လိဂ်ချင်းစီ ဒါမှမဟုတ် အားလုံးကို ရွေးပြီး ပတ်မယ်
-    const leaguesToProcess = targetLeagueId 
-      ? { [targetLeagueId]: INFER_LEAGUES[targetLeagueId] } 
-      : INFER_LEAGUES;
-
-    for (const [lgId, lgName] of Object.entries(leaguesToProcess)) {
-      if (!lgName) continue;
-      
+    // လိဂ်တွေကို တစ်ခါတည်း (Parallel) ဆွဲဖို့ Promise.all ကို သုံးမယ်
+    const promises = Object.entries(INFER_LEAGUES).map(async ([lgId, lgName]) => {
       try {
         const res = await fetch(
           `https://api.infersports.dev/v1/events?sport=football&league=${lgId}&status=scheduled&limit=50`,
           { headers: { Authorization: `Bearer ${key}` } }
         );
-        if (!res.ok) continue;
+        if (!res.ok) return;
         
         const data = await res.json();
         const events = data.data || [];
@@ -539,7 +533,11 @@ async function syncInferOdds(env, targetLeagueId = null) {
       } catch (e) {
         console.error("Infer sync error for " + lgName + ":", e.message);
       }
-    }
+    });
+
+    // အကုန်လုံး ပြီးတဲ့အထိ စောင့်မယ်
+    await Promise.all(promises);
+    
   } catch (e) {
     console.error("syncInferOdds error:", e.message);
   }
