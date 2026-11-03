@@ -423,7 +423,7 @@ async function importCsv(request, env) {
 }
 
 // ============================================================
-// INFER SPORTS MAPPING (Fixed)
+// INFER SPORTS MAPPING (Line Movement Tracking)
 // ============================================================
 async function syncInferOdds(env) {
   try {
@@ -433,6 +433,7 @@ async function syncInferOdds(env) {
       return;
     }
 
+    // ၃ ရက်ကြိုကနေ ၇ ရက်အတွင်း ရှိတဲ့ပွဲစဉ်တွေကို ယူမယ်
     const now = Date.now();
     const winStart = now - 3 * 24 * 3600 * 1000;
     const winEnd = now + 7 * 24 * 3600 * 1000;
@@ -478,7 +479,7 @@ async function syncInferOdds(env) {
           const awayTeam = ev.away_team?.name || "";
           if (!homeTeam || !awayTeam) continue;
 
-          // Database ထဲမှာ ဒီပွဲစဉ် ရှိမရှိ ရှာမယ် (အသင်းနာမည်ပဲ သုံးမယ်)
+          // Database ထဲမှာ ဒီပွဲစဉ် ရှိမရှိ ရှာမယ်
           const { results } = await env.DB.prepare(
             `SELECT fixture_id FROM matches 
              WHERE season = '2627' 
@@ -512,33 +513,32 @@ async function syncInferOdds(env) {
                 const rawOdds = entry.odds.odds || [];
                 const oddsJson = JSON.stringify(rawOdds);
                 
-                // Line တွေကို ဆွဲထုတ်မယ်
                 let ahLine = null;
                 let totalLine = null;
 
                 for (const o of rawOdds) {
-                  if (o.market_type === 'asian_handicap' && ahLine === null) {
-                    ahLine = o.line;
-                  }
-                  if (o.market_type === 'totals' && totalLine === null) {
-                    totalLine = o.line;
-                  }
+                  if (o.market_type === 'asian_handicap' && ahLine === null) ahLine = o.line;
+                  if (o.market_type === 'totals' && totalLine === null) totalLine = o.line;
                 }
 
-                // infer_odds ထဲ ထည့်မယ်
-                await env.DB.prepare(`
-                  INSERT INTO infer_odds
-                  (event_id, league_id, league_name, home, away, scheduled_at, open_json, current_json, fetched_at)
-                  VALUES (?,?,?,?,?,?,?,?,?)
-                  ON CONFLICT(event_id) DO UPDATE SET
-                    current_json = excluded.current_json,
-                    fetched_at = excluded.fetched_at
-                `).bind(
-                  ev.id, lgId, lgName, homeTeam, awayTeam, ev.scheduled_at,
-                  oddsJson, oddsJson, new Date().toISOString()
-                ).run();
+                // ၁. History သိမ်းဖို့ အတွက် နောက်ဆုံးသိမ်းထားတဲ့ လိုင်းကို အရင်စစ်မယ်
+                const lastOdds = await env.DB.prepare(
+                  "SELECT current_json FROM infer_odds WHERE event_id = ? ORDER BY fetched_at DESC LIMIT 1"
+                ).bind(ev.id).first();
 
-                // matches table ကို Line တွေ သွားပြင်မယ်
+                // ၂. လိုင်းကွာခြားမှုရှိမှ ဒေတာအသစ် သိမ်းမယ်
+                if (!lastOdds || lastOdds.current_json !== oddsJson) {
+                  await env.DB.prepare(`
+                    INSERT INTO infer_odds
+                    (event_id, league_id, league_name, home, away, scheduled_at, open_json, current_json, fetched_at)
+                    VALUES (?,?,?,?,?,?,?,?,?)
+                  `).bind(
+                    ev.id, lgId, lgName, homeTeam, awayTeam, ev.scheduled_at,
+                    oddsJson, oddsJson, new Date().toISOString()
+                  ).run();
+                }
+
+                // ၃. matches table ကို နောက်ဆုံး Line နဲ့ Update လုပ်မယ်
                 if (ahLine !== null || totalLine !== null) {
                   await env.DB.prepare(
                     `UPDATE matches SET ahh = COALESCE(?, ahh), total_line = COALESCE(?, total_line) WHERE fixture_id = ?`
