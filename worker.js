@@ -423,37 +423,26 @@ async function importCsv(request, env) {
 }
 
 // ============================================================
-// INFER SPORTS MAPPING (Alias Matching: CSV <-> API)
+// INFER SPORTS MAPPING (Fix Unique Error & Better Logging)
 // ============================================================
 async function syncInferOdds(env) {
   try {
     const key = env.SaggiterX_Bot || env.INFER_KEY;
-    if (!key) {
-      console.log("No Infer Key");
-      return;
-    }
+    if (!key) return;
 
     const now = Date.now();
     const winStart = now - 3 * 24 * 3600 * 1000;
     const winEnd = now + 7 * 24 * 3600 * 1000;
 
     const INFER_LEAGUES = {
-      'lg_T9268DXK': 'Premier League',
-      'lg_NVRGJ4SZ': 'Championship',
-      'lg_28PAYC53': 'League One',
-      'lg_WYMR6XBG': 'League Two',
-      'lg_FH9KCTA5': 'National League',
-      'lg_PYBWSDEA': 'La Liga',
-      'lg_WHR6XBGZ': 'Segunda Division',
-      'lg_QXCSBRME': 'Serie A',
-      'lg_T99K68DX': 'Serie B',
-      'lg_PGYWSDEA': 'Bundesliga',
-      'lg_WG8R6XBG': '2. Bundesliga',
-      'lg_CNSP3BPA': 'Ligue 1',
-      'lg_YS9BW2MS': 'Ligue 2',
-      'lg_EH3F3MDQ': 'Eredivisie',
-      'lg_FA2KCTA5': 'Jupiler Pro League',
-      'lg_HB26EKC0': 'Primeira Liga'
+      'lg_T9268DXK': 'Premier League', 'lg_NVRGJ4SZ': 'Championship',
+      'lg_28PAYC53': 'League One', 'lg_WYMR6XBG': 'League Two',
+      'lg_FH9KCTA5': 'National League', 'lg_PYBWSDEA': 'La Liga',
+      'lg_WHR6XBGZ': 'Segunda Division', 'lg_QXCSBRME': 'Serie A',
+      'lg_T99K68DX': 'Serie B', 'lg_PGYWSDEA': 'Bundesliga',
+      'lg_WG8R6XBG': '2. Bundesliga', 'lg_CNSP3BPA': 'Ligue 1',
+      'lg_YS9BW2MS': 'Ligue 2', 'lg_EH3F3MDQ': 'Eredivisie',
+      'lg_FA2KCTA5': 'Jupiler Pro League', 'lg_HB26EKC0': 'Primeira Liga'
     };
 
     for (const [lgId, lgName] of Object.entries(INFER_LEAGUES)) {
@@ -462,10 +451,7 @@ async function syncInferOdds(env) {
           `https://api.infersports.dev/v1/events?sport=football&league=${lgId}&status=scheduled&limit=50`,
           { headers: { Authorization: `Bearer ${key}` } }
         );
-        if (!res.ok) {
-          console.log("Infer events error HTTP " + res.status + " for " + lgName);
-          continue;
-        }
+        if (!res.ok) continue;
         
         const data = await res.json();
         const events = data.data || [];
@@ -478,24 +464,15 @@ async function syncInferOdds(env) {
           const apiAway = ev.away_team?.name || "";
           if (!apiHome || !apiAway) continue;
 
-          // 1. team_alias ထဲမှာ InferSports နာမည် (api_name) နဲ့ ရှာပြီး CSV နာမည် (csv_name) ကို ယူမယ်
-          // (Table Column နာမည်တွေက api_name နဲ့ csv_name ဖြစ်တယ်လို့ ယူဆထားပါတယ်)
-          const homeAlias = await env.DB.prepare("SELECT csv_name FROM team_alias WHERE LOWER(api_name) = ?").bind(apiHome.toLowerCase()).first();
-          const awayAlias = await env.DB.prepare("SELECT csv_name FROM team_alias WHERE LOWER(api_name) = ?").bind(apiAway.toLowerCase()).first();
-          
-          // Alias မရှိရင် API နာမည်အတိုင်းပဲ သုံးမယ်
-          const searchHome = homeAlias ? homeAlias.csv_name : apiHome;
-          const searchAway = awayAlias ? awayAlias.csv_name : apiAway;
-
-          // 2. Database (matches) ထဲမှာ ရှာမယ်
+          // 1. Database ထဲမှာ ရှာမယ် (အသင်းနာမည် LIKE နဲ့ ကျယ်ကျယ်ရှာမယ်)
           const { results } = await env.DB.prepare(
             `SELECT fixture_id FROM matches 
              WHERE season = '2627' 
              AND (LOWER(home) LIKE ? OR LOWER(home) LIKE ?) 
              AND (LOWER(away) LIKE ? OR LOWER(away) LIKE ?)`
           ).bind(
-            `%${searchHome.toLowerCase()}%`, `%${apiHome.toLowerCase().split(' ')[0]}%`,
-            `%${searchAway.toLowerCase()}%`, `%${apiAway.toLowerCase().split(' ')[0]}%`
+            `%${apiHome.toLowerCase()}%`, `%${apiHome.toLowerCase().split(' ')[0]}%`,
+            `%${apiAway.toLowerCase()}%`, `%${apiAway.toLowerCase().split(' ')[0]}%`
           ).all();
 
           if (results && results.length > 0) {
@@ -529,14 +506,15 @@ async function syncInferOdds(env) {
                   if (o.market_type === 'totals' && totalLine === null) totalLine = o.line;
                 }
 
-                // Line ကွာခြားမှုရှိမှ သိမ်းမယ်
-                const lastOdds = await env.DB.prepare(
+                // 2. Unique Error မတက်အောင် အရင်စစ်မယ်
+                const existingOdds = await env.DB.prepare(
                   "SELECT current_json FROM infer_odds WHERE event_id = ? ORDER BY fetched_at DESC LIMIT 1"
                 ).bind(ev.id).first();
 
-                if (!lastOdds || lastOdds.current_json !== oddsJson) {
+                // မရှိရင် အသစ်ထည့်၊ ရှိပြီး ကွာခြားချက်ရှိရင် အသစ်ထပ်ထည့် (History အတွက်)
+                if (!existingOdds || existingOdds.current_json !== oddsJson) {
                   await env.DB.prepare(`
-                    INSERT INTO infer_odds
+                    INSERT OR IGNORE INTO infer_odds
                     (event_id, league_id, league_name, home, away, scheduled_at, open_json, current_json, fetched_at)
                     VALUES (?,?,?,?,?,?,?,?,?)
                   `).bind(
@@ -545,7 +523,7 @@ async function syncInferOdds(env) {
                   ).run();
                 }
 
-                // matches table ကို update လုပ်မယ်
+                // 3. matches table ကို update လုပ်မယ်
                 if (ahLine !== null || totalLine !== null) {
                   await env.DB.prepare(
                     `UPDATE matches SET ahh = COALESCE(?, ahh), total_line = COALESCE(?, total_line) WHERE fixture_id = ?`
