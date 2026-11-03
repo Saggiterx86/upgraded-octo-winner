@@ -138,12 +138,55 @@ async function onMessage(msg, env) {
     return new Response("OK");
   }
 
-  if (text === "/inferfetch") {
-    await send(env, chatId, "⏳ InferSports ကနေ ဒေတာတွေ ဆွဲနေပါတယ်...");
-    await syncInferOdds(env);
-    await send(env, chatId, "✅ InferSports ဒေတာ ဆွဲပြီးပါပြီ။");
+if (text === "/inferfetch") {
+  await send(env, chatId, "⏳ InferSports ကနေ ဒေတာတွေ ဆွဲနေပါတယ်...");
+  await syncInferOdds(env);
+  await send(env, chatId, "✅ InferSports ဒေတာ ဆွဲပြီးပါပြီ။");
+  return new Response("OK");
+}
+
+// 👇 ဒီနေရာမှာ ထည့်ပါ 👇
+if (text === "/testinfer") {
+  await send(env, chatId, "⏳ InferSports API ကို စမ်းသပ်နေပါတယ်...");
+  const key = env.SaggiterX_Bot || env.INFER_KEY;
+  if (!key) {
+    await send(env, chatId, "❌ Infer Key မရှိပါ။");
     return new Response("OK");
   }
+
+  try {
+    const res = await fetch(
+      `https://api.infersports.dev/v1/events?sport=football&league=lg_T9268DXK&status=scheduled&limit=3`,
+      { headers: { Authorization: `Bearer ${key}` } }
+    );
+    
+    if (!res.ok) {
+       await send(env, chatId, `❌ HTTP Error: ${res.status}`);
+       return new Response("OK");
+    }
+
+    const data = await res.json();
+    const events = data.data || [];
+    
+    if (events.length === 0) {
+      await send(env, chatId, "❌ InferSports မှာ ပွဲစဉ် မရှိပါ။");
+      return new Response("OK");
+    }
+
+    let msgText = "🧪 <b>Test Infer API (EPL)</b>\n\n";
+    for (const ev of events) {
+      const dt = new Date(ev.scheduled_at);
+      msgText += `🏟️ ${ev.home_team.name} vs ${ev.away_team.name}\n`;
+      msgText += `🕒 ${dt.toISOString()}\n\n`;
+    }
+    
+    await send(env, chatId, msgText);
+  } catch (e) {
+    await send(env, chatId, `⚠️ Error: ${e.message}`);
+  }
+  return new Response("OK");
+}
+// 👆 ဒီအထိပါ 👆
 
   if (msg.document) {
     const doc = msg.document;
