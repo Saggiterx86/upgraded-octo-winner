@@ -437,7 +437,7 @@ async function syncInferOdds(env) {
 
           // Database ထဲမှာ ဒီပွဲစဉ် ရှိမရှိ ရှာမယ်
           const dt = new Date(ts);
-          const dateStr = dt.toLocaleDateString("en-GB", { timeZone: "Asia/Yangon", year: "numeric", month: "2-digit", day: "2-digit" }).split('/').reverse().join('-');
+          const dateStr = fmtDate(dt);
           
           const { results } = await env.DB.prepare(
             "SELECT fixture_id FROM matches WHERE date = ? AND (LOWER(home) LIKE ? OR LOWER(away) LIKE ?)"
