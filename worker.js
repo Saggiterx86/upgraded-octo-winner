@@ -423,7 +423,7 @@ async function importCsv(request, env) {
 }
 
 // ============================================================
-// INFER SPORTS MAPPING
+// INFER SPORTS MAPPING (Fixed)
 // ============================================================
 async function syncInferOdds(env) {
   try {
@@ -478,28 +478,21 @@ async function syncInferOdds(env) {
           const awayTeam = ev.away_team?.name || "";
           if (!homeTeam || !awayTeam) continue;
 
-          // 1. Team Alias ကို အရင်စစ်မယ်
-          const homeAlias = await env.DB.prepare("SELECT infer_name FROM team_alias WHERE csv_name = ?").bind(homeTeam).first();
-          const awayAlias = await env.DB.prepare("SELECT infer_name FROM team_alias WHERE csv_name = ?").bind(awayTeam).first();
-          
-          const searchHome = homeAlias ? homeAlias.infer_name : homeTeam;
-          const searchAway = awayAlias ? awayAlias.infer_name : awayTeam;
-
-          // 2. Database ထဲမှာ ဒီပွဲစဉ် ရှိမရှိ ရှာမယ် (ရက်စွဲ မပါဘဲ အသင်းနာမည်ပဲ သုံးမယ်)
+          // Database ထဲမှာ ဒီပွဲစဉ် ရှိမရှိ ရှာမယ် (အသင်းနာမည်ပဲ သုံးမယ်)
           const { results } = await env.DB.prepare(
             `SELECT fixture_id FROM matches 
              WHERE season = '2627' 
              AND (LOWER(home) LIKE ? OR LOWER(home) LIKE ?) 
              AND (LOWER(away) LIKE ? OR LOWER(away) LIKE ?)`
           ).bind(
-            `%${searchHome.toLowerCase()}%`, `%${homeTeam.toLowerCase()}%`,
-            `%${searchAway.toLowerCase()}%`, `%${awayTeam.toLowerCase()}%`
+            `%${homeTeam.toLowerCase()}%`, `%${homeTeam.toLowerCase().split(' ')[0]}%`,
+            `%${awayTeam.toLowerCase()}%`, `%${awayTeam.toLowerCase().split(' ')[0]}%`
           ).all();
 
           if (results && results.length > 0) {
             const fixtureId = results[0].fixture_id;
             
-            // 3. Odds တွေကို ဆွဲမယ်
+            // Odds တွေကို ဆွဲမယ်
             const oddsRes = await fetch("https://api.infersports.dev/v1/odds/batch", {
               method: "POST",
               headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
@@ -519,16 +512,15 @@ async function syncInferOdds(env) {
                 const rawOdds = entry.odds.odds || [];
                 const oddsJson = JSON.stringify(rawOdds);
                 
-                // 4. Line တွေကို ဆွဲထုတ်မယ် (ahh နဲ့ total_line)
+                // Line တွေကို ဆွဲထုတ်မယ်
                 let ahLine = null;
                 let totalLine = null;
 
                 for (const o of rawOdds) {
-                  // Pinnacle ကို ဦးစားပေး (မရှိရင် ပထမဆုံးတစ်ခု)
-                  if (o.market_type === 'asian_handicap' && !ahLine) {
+                  if (o.market_type === 'asian_handicap' && ahLine === null) {
                     ahLine = o.line;
                   }
-                  if (o.market_type === 'totals' && !totalLine) {
+                  if (o.market_type === 'totals' && totalLine === null) {
                     totalLine = o.line;
                   }
                 }
@@ -546,7 +538,7 @@ async function syncInferOdds(env) {
                   oddsJson, oddsJson, new Date().toISOString()
                 ).run();
 
-                // 5. matches table ကို Line တွေ သွားပြင်မယ်
+                // matches table ကို Line တွေ သွားပြင်မယ်
                 if (ahLine !== null || totalLine !== null) {
                   await env.DB.prepare(
                     `UPDATE matches SET ahh = COALESCE(?, ahh), total_line = COALESCE(?, total_line) WHERE fixture_id = ?`
