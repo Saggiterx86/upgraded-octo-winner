@@ -422,7 +422,7 @@ async function importCsv(request, env) {
   return new Response(JSON.stringify({ ok: true, inserted: rows.length }), { headers: { "content-type": "application/json" } });
 }
 // ============================================================
-// INFER SPORTS MAPPING (Parallel Sync - No Timeout)
+// INFER SPORTS MAPPING (Smart Matching & Alias)
 // ============================================================
 async function syncInferOdds(env) {
   try {
@@ -444,7 +444,6 @@ async function syncInferOdds(env) {
       'lg_FA2KCTA5': 'Jupiler Pro League', 'lg_HB26EKC0': 'Primeira Liga'
     };
 
-    // လိဂ်တွေကို တစ်ခါတည်း (Parallel) ဆွဲဖို့ Promise.all ကို သုံးမယ်
     const promises = Object.entries(INFER_LEAGUES).map(async ([lgId, lgName]) => {
       try {
         const res = await fetch(
@@ -464,14 +463,22 @@ async function syncInferOdds(env) {
           const apiAway = ev.away_team?.name || "";
           if (!apiHome || !apiAway) continue;
 
+          // ၁. Alias ထဲမှာ အရင်ရှာမယ် (ရှိရင် အဲဒီနာမည်ကို သုံးမယ်)
+          const hAlias = await env.DB.prepare("SELECT csv_name FROM team_alias WHERE LOWER(api_name) = ?").bind(apiHome.toLowerCase()).first();
+          const aAlias = await env.DB.prepare("SELECT csv_name FROM team_alias WHERE LOWER(api_name) = ?").bind(apiAway.toLowerCase()).first();
+          
+          const sHome = hAlias ? hAlias.csv_name : apiHome;
+          const sAway = aAlias ? aAlias.csv_name : apiAway;
+
+          // ၂. Database ထဲမှာ ရှာမယ် (နာမည် အစိတ်အပိုင်းတွေ ပါဝင်မှုကို စစ်မယ်)
           const { results } = await env.DB.prepare(
             `SELECT fixture_id FROM matches 
              WHERE season = '2627' 
-             AND (LOWER(home) LIKE ? OR LOWER(home) LIKE ?) 
-             AND (LOWER(away) LIKE ? OR LOWER(away) LIKE ?)`
+             AND (LOWER(home) LIKE ? OR LOWER(home) LIKE ? OR LOWER(home) LIKE ?) 
+             AND (LOWER(away) LIKE ? OR LOWER(away) LIKE ? OR LOWER(away) LIKE ?)`
           ).bind(
-            `%${apiHome.toLowerCase()}%`, `%${apiHome.toLowerCase().split(' ')[0]}%`,
-            `%${apiAway.toLowerCase()}%`, `%${apiAway.toLowerCase().split(' ')[0]}%`
+            `%${sHome.toLowerCase()}%`, `%${sHome.toLowerCase().split(' ')[0]}%`, `%${sHome.toLowerCase().split(' ').pop()}%`,
+            `%${sAway.toLowerCase()}%`, `%${sAway.toLowerCase().split(' ')[0]}%`, `%${sAway.toLowerCase().split(' ').pop()}%`
           ).all();
 
           if (results && results.length > 0) {
@@ -535,13 +542,12 @@ async function syncInferOdds(env) {
       }
     });
 
-    // အကုန်လုံး ပြီးတဲ့အထိ စောင့်မယ်
     await Promise.all(promises);
     
   } catch (e) {
     console.error("syncInferOdds error:", e.message);
   }
-}
+            }
 // ============================================================
 // AUTO FETCH FIXTURES (Cron Job)
 // ============================================================
