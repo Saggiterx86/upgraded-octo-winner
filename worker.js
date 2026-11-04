@@ -30,54 +30,88 @@ async function onCallback(cb) {
 
   if (data === 'yleagues') {
     await send(chatId, 'ခဏစောင့်ပါ... Y ပွဲတွေ ရှာနေပါတယ်');
-    const res = await callApi('getYFixtures', {});
-    if (!res || !res.total) {
-      await send(chatId, 'Y ဖြစ်တဲ့ပွဲ မရှိပါ');
-      return;
+    
+    // Error တက်ရင် ဖမ်းပြီး Bot ဆီ ပို့မယ်
+    try {
+      const res = await callApi('getYFixtures', {});
+      
+      if (res.error) {
+         await send(chatId, `Error: ${res.error}\nDetails: ${res.details || res.raw || ''}`);
+         return;
+      }
+      
+      if (!res || !res.total) {
+        await send(chatId, 'Y ဖြစ်တဲ့ပွဲ မရှိပါ');
+        return;
+      }
+      
+      const leagues = Object.keys(res.byLeague);
+      const keyboard = leagues.map(lg => ([{
+        text: `${lg} (${res.byLeague[lg].length})`,
+        callback_data: `lg|${lg}`
+      }]));
+      await send(chatId, `Y ဖြစ်တဲ့ လိဂ် ${leagues.length} ခု`, keyboard);
+      
+    } catch (err) {
+      await send(chatId, `Fetch Error: ${err.message}`);
     }
-    const leagues = Object.keys(res.byLeague);
-    const keyboard = leagues.map(lg => ([{
-      text: `${lg} (${res.byLeague[lg].length})`,
-      callback_data: `lg|${lg}`
-    }]));
-    await send(chatId, `Y ဖြစ်တဲ့ လိဂ် ${leagues.length} ခု`, keyboard);
   }
   else if (data.startsWith('lg|')) {
     const lg = data.slice(3);
-    const res = await callApi('getYFixtures', {});
-    const list = res.byLeague[lg] || [];
-    const keyboard = list.map((f, i) => ([{
-      text: `${f.Home} vs ${f.Away}`,
-      callback_data: `fx|${lg}|${i}`
-    }]));
-    keyboard.push([{ text: '⬅️ နောက်သို့', callback_data: 'yleagues' }]);
-    await send(chatId, `${lg} - Y ပွဲ ${list.length} ပွဲ`, keyboard);
+    try {
+      const res = await callApi('getYFixtures', {});
+      const list = res.byLeague[lg] || [];
+      const keyboard = list.map((f, i) => ([{
+        text: `${f.Home} vs ${f.Away}`,
+        callback_data: `fx|${lg}|${i}`
+      }]));
+      keyboard.push([{ text: '⬅️ နောက်သို့', callback_data: 'yleagues' }]);
+      await send(chatId, `${lg} - Y ပွဲ ${list.length} ပွဲ`, keyboard);
+    } catch (err) {
+      await send(chatId, `Error: ${err.message}`);
+    }
   }
   else if (data.startsWith('fx|')) {
     const parts = data.split('|');
     const lg = parts[1];
     const idx = Number(parts[2]);
-    const res = await callApi('getYFixtures', {});
-    const f = (res.byLeague[lg] || [])[idx];
-    if (!f) { await send(chatId, 'မတွေ့ပါ'); return; }
-    const text =
-      `📅 ${f.Date}\n` +
-      `🏆 ${f.League}\n` +
-      `${f.Home} vs ${f.Away}\n\n` +
-      `Overall: ${f.overallPoint} (>2.5 ${f.overallPoint > 2.5 ? '✅' : '❌'})\n` +
-      `HA: ${f.haPoint} (>2.5 ${f.haPoint > 2.5 ? '✅' : '❌'})\n` +
-      `HT Ratio: ${f.htRatioHome} _ ${f.htRatioAway}`;
-    await send(chatId, text);
+    try {
+      const res = await callApi('getYFixtures', {});
+      const f = (res.byLeague[lg] || [])[idx];
+      if (!f) { await send(chatId, 'မတွေ့ပါ'); return; }
+      const text =
+        `📅 ${f.Date}\n` +
+        `🏆 ${f.League}\n` +
+        `${f.Home} vs ${f.Away}\n\n` +
+        `Overall: ${f.overallPoint} (>2.5 ${f.overallPoint > 2.5 ? '✅' : '❌'})\n` +
+        `HA: ${f.haPoint} (>2.5 ${f.haPoint > 2.5 ? '✅' : '❌'})\n` +
+        `HT Ratio: ${f.htRatioHome} _ ${f.htRatioAway}`;
+      await send(chatId, text);
+    } catch (err) {
+      await send(chatId, `Error: ${err.message}`);
+    }
   }
 }
 
+// Apps Script ကို ခေါ်တဲ့အခါ GET method သုံးပြီး ခေါ်မယ်
 async function callApi(action, params) {
-  const r = await fetch(APPS_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, params })
+  const url = new URL(APPS_URL);
+  url.searchParams.append('action', action);
+  if (params) url.searchParams.append('params', JSON.stringify(params));
+
+  const r = await fetch(url.toString(), {
+    method: 'GET',
+    redirect: 'follow'
   });
-  return await r.json();
+  
+  const text = await r.text();
+  
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    // Google က Login page ပြနေရင် ဒီကို ရောက်လာမယ်
+    return { error: "Apps Script returned non-JSON", raw: text.substring(0, 100) };
+  }
 }
 
 async function send(chatId, text, keyboard) {
