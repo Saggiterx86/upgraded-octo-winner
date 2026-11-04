@@ -1,18 +1,9 @@
 const BOT_TOKEN = '8925005543:AAHTLmna7_yU7L3sFPWaEei7-FpCyny-E0s';
-const OWNER_CHAT_ID = '1821028384';
 const APPS_URL = 'https://script.google.com/macros/s/AKfycbwSI4kwHraeeXtNXjyujo6fG4jsZ4Q7J1DBcUC-pDlPoybNUOfCJR91Men3D1XZvrJR/exec';
 const API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 export default {
   async fetch(req) {
-    const url = new URL(req.url);
-
-    if (url.pathname === '/alert' && req.method === 'POST') {
-      const body = await req.json();
-      await send(OWNER_CHAT_ID, `🚨 Alert\n${JSON.stringify(body, null, 2)}`);
-      return new Response('OK');
-    }
-
     if (req.method === 'POST') {
       const u = await req.json();
       if (u.message) await onMessage(u.message);
@@ -38,8 +29,9 @@ async function onCallback(cb) {
   await answer(cb.id);
 
   if (data === 'yleagues') {
+    await send(chatId, 'ခဏစောင့်ပါ... Y ပွဲတွေ ရှာနေပါတယ်');
     const res = await callApi('getYFixtures', {});
-    if (!res.total) {
+    if (!res || !res.total) {
       await send(chatId, 'Y ဖြစ်တဲ့ပွဲ မရှိပါ');
       return;
     }
@@ -48,7 +40,6 @@ async function onCallback(cb) {
       text: `${lg} (${res.byLeague[lg].length})`,
       callback_data: `lg|${lg}`
     }]));
-    keyboard.push([{ text: '⬅️ နောက်သို့', callback_data: 'back' }]);
     await send(chatId, `Y ဖြစ်တဲ့ လိဂ် ${leagues.length} ခု`, keyboard);
   }
   else if (data.startsWith('lg|')) {
@@ -77,9 +68,6 @@ async function onCallback(cb) {
       `HA: ${f.haPoint} (>2.5 ${f.haPoint > 2.5 ? '✅' : '❌'})\n` +
       `HT Ratio: ${f.htRatioHome} _ ${f.htRatioAway}`;
     await send(chatId, text);
-  }
-  else if (data === 'back') {
-    await send(chatId, 'Menu', [[{ text: '✅ Y Leagues', callback_data: 'yleagues' }]]);
   }
 }
 
