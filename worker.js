@@ -7,138 +7,20 @@ export default {
     }
 
     // ==========================================
-    // 1. Database စစ်ဆေးရန်
+    // CHECK DB
     // ==========================================
     if (url.pathname === "/check-db") {
       try {
-        const { results: sampleDates } = await env.DB.prepare(`SELECT DISTINCT match_date FROM raw_matches ORDER BY match_date DESC LIMIT 10`).all();
-        const { results: nullGoals } = await env.DB.prepare(`SELECT id, league, match_date, home_team, away_team, home_goals FROM raw_matches WHERE home_goals IS NULL LIMIT 5`).all();
         const { results: count } = await env.DB.prepare(`SELECT COUNT(*) as total FROM raw_matches`).all();
-
-        return new Response(JSON.stringify({ 
-          status: "success", 
-          total_rows: count[0].total,
-          latest_dates_in_db: sampleDates,
-          sample_upcoming_matches: nullGoals
-        }, null, 2), { headers: { "Content-Type": "application/json" } });
+        const { results: latest } = await env.DB.prepare(`SELECT * FROM raw_matches ORDER BY id DESC LIMIT 3`).all();
+        return new Response(JSON.stringify({ total_rows: count[0].total, latest_data: latest }, null, 2), { headers: { "Content-Type": "application/json" } });
       } catch (err) {
-        return new Response(JSON.stringify({ status: "error", message: err.message }, null, 2), { status: 500, headers: { "Content-Type": "application/json" } });
+        return new Response(err.message, { status: 500 });
       }
     }
 
     // ==========================================
-    // 2. လိဂ်အားလုံးကို တစ်ချက်တည်း Sync လုပ်ရန်
-    // ==========================================
-    if (url.pathname === "/sync-all-csv") {
-      try {
-        const leagues = ['E0', 'E1', 'E2', 'E3', 'EC', 'SP1', 'SP2', 'I1', 'I2', 'D1', 'D2', 'F1', 'F2', 'N1', 'P1', 'B1', 'G1', 'SC0'];
-        let summary = [];
-        let totalInserted = 0;
-
-        for (let i = 0; i < leagues.length; i += 4) {
-          const batch = leagues.slice(i, i + 4);
-          
-          await Promise.all(batch.map(async (leagueCode) => {
-            try {
-              const csvUrl = `https://www.football-data.co.uk/mmz4281/2627/${leagueCode}.csv`;
-              const response = await fetch(csvUrl);
-              if (!response.ok) return; 
-              
-              const csvText = await response.text();
-              const lines = csvText.trim().split("\n");
-              if (lines.length < 2) return;
-
-              const headers = lines[0].split(",").map(h => h.trim());
-              const getIndex = (name) => headers.indexOf(name);
-              
-              const idxDate = getIndex("Date");
-              const idxHome = getIndex("HomeTeam");
-              const idxAway = getIndex("AwayTeam");
-              const idxFTHG = getIndex("FTHG");
-              const idxFTAG = getIndex("FTAG");
-              if (idxDate === -1 || idxHome === -1) return;
-
-              let inserted = 0;
-              for (let j = 1; j < lines.length; j++) {
-                const row = lines[j].split(",");
-                if (row.length < headers.length) continue;
-
-                const rawDate = row[idxDate];
-                let formattedDate = rawDate;
-                if (rawDate && rawDate.includes("/")) {
-                  const parts = rawDate.split("/");
-                  if (parts.length === 3) {
-                    let year = parts[2];
-                    if (year.length === 2) year = "20" + year;
-                    formattedDate = `${year}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
-                  }
-                }
-
-                const fthg = row[idxFTHG] ? parseInt(row[idxFTHG]) : null;
-                const ftag = row[idxFTAG] ? parseInt(row[idxFTAG]) : null;
-
-                await env.DB.prepare(`
-                  INSERT INTO raw_matches (league, match_date, home_team, away_team, home_goals, away_goals)
-                  VALUES (?, ?, ?, ?, ?, ?)
-                  ON CONFLICT(league, match_date, home_team, away_team) 
-                  DO UPDATE SET home_goals = excluded.home_goals, away_goals = excluded.away_goals, updated_at = CURRENT_TIMESTAMP
-                `).bind(leagueCode, formattedDate, row[idxHome], row[idxAway], fthg, ftag).run();
-                inserted++;
-              }
-              summary.push({ league: leagueCode, rows: inserted });
-              totalInserted += inserted;
-            } catch (e) { summary.push({ league: leagueCode, error: e.message }); }
-          }));
-        }
-
-        // အနာဂတ်ပွဲစဉ်များ ဆွဲယူခြင်း
-        try {
-          const fixRes = await fetch("https://www.football-data.co.uk/fixtures.csv");
-          if (fixRes.ok) {
-            const fixText = await fixRes.text();
-            const fixLines = fixText.trim().split("\n");
-            const fixHeaders = fixLines[0].split(",").map(h => h.trim());
-            const fIdxDate = fixHeaders.indexOf("Date");
-            const fIdxHome = fixHeaders.indexOf("HomeTeam");
-            const fIdxAway = fixHeaders.indexOf("AwayTeam");
-            const fIdxDiv = fixHeaders.indexOf("Div");
-            
-            let fixInserted = 0;
-            for (let i = 1; i < fixLines.length; i++) {
-              const row = fixLines[i].split(",");
-              if (row.length < fixHeaders.length) continue;
-              if (!leagues.includes(row[fIdxDiv])) continue;
-
-              const rawDate = row[fIdxDate];
-              let formattedDate = rawDate;
-              if (rawDate && rawDate.includes("/")) {
-                const parts = rawDate.split("/");
-                if (parts.length === 3) {
-                  let year = parts[2];
-                  if (year.length === 2) year = "20" + year;
-                  formattedDate = `${year}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
-                }
-              }
-
-              await env.DB.prepare(`
-                INSERT INTO raw_matches (league, match_date, home_team, away_team)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(league, match_date, home_team, away_team) DO NOTHING
-              `).bind(row[fIdxDiv], formattedDate, row[fIdxHome], row[fIdxAway]).run();
-              fixInserted++;
-            }
-            summary.push({ league: "FIXTURES", rows: fixInserted });
-          }
-        } catch(e) {}
-
-        return new Response(JSON.stringify({ status: "success", message: `Synced ${totalInserted} historical rows.`, details: summary }, null, 2), { headers: { "Content-Type": "application/json" } });
-      } catch (err) {
-        return new Response("Sync Error: " + err.message, { status: 500 });
-      }
-    }
-
-    // ==========================================
-    // 3. Odds Sync (API)
+    // SYNC ODDS (API)
     // ==========================================
     if (url.pathname === "/sync-odds") {
       try {
@@ -155,7 +37,6 @@ export default {
         const events = apiData.data || apiData.events || [];
         
         let matchedCount = 0;
-        let matchedList = [];
         for (const event of events) {
           let mappedApiHome = manualMap[event.home_team?.name] || event.home_team?.name || "";
           let mappedApiAway = manualMap[event.away_team?.name] || event.away_team?.name || "";
@@ -194,17 +75,16 @@ export default {
             }
             await env.DB.prepare(`UPDATE raw_matches SET total_line = ?, ah_line = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(totalLine, ahLine, foundMatch.id).run();
             matchedCount++;
-            matchedList.push({ league: foundMatch.league, csv_match: `${foundMatch.home_team} vs ${foundMatch.away_team}`, total_line: totalLine, ah_line: ahLine });
           }
         }
-        return new Response(JSON.stringify({ status: "success", message: `Matched ${matchedCount} events.`, matched_data: matchedList }, null, 2), { headers: { "Content-Type": "application/json" } });
+        return new Response(JSON.stringify({ status: "success", message: `Matched ${matchedCount} events.` }), { headers: { "Content-Type": "application/json" } });
       } catch (err) {
-        return new Response(JSON.stringify({ status: "error", message: err.message }, null, 2), { status: 500, headers: { "Content-Type": "application/json" } });
+        return new Response(JSON.stringify({ status: "error", message: err.message }), { status: 500, headers: { "Content-Type": "application/json" } });
       }
     }
 
     // ==========================================
-    // 4. Daily Scan (ယနေ့ 06:30 မှ မနက်ဖြန် 06:29 အထိ)
+    // DAILY SCAN (Sync Data + Calculate)
     // ==========================================
     if (url.pathname === "/daily-scan") {
       try {
@@ -214,6 +94,7 @@ export default {
         const mmStartOfDay = new Date(mmNow);
         mmStartOfDay.setUTCHours(0, 0, 0, 0);
         
+        // ယနေ့ 06:30 နဲ့ မနက်ဖြန် 06:29 ကို တွက်မယ်
         const startTimeMM = new Date(mmStartOfDay.getTime() + (6.5 * 60 * 60 * 1000));
         const endTimeMM = new Date(startTimeMM.getTime() + (24 * 60 * 60 * 1000) - (60 * 1000)); 
 
@@ -227,6 +108,99 @@ export default {
         const dateToday = fmt(startTimeMM);
         const dateTomorrow = fmt(endTimeMM);
 
+        // ၁။ DATA တွေကို လိဂ်တစ်ခုချင်း ဆွဲပြီး သိမ်းမယ် (Batch 4 ခုစီ)
+        const leagues = ['E0', 'E1', 'E2', 'E3', 'EC', 'SP1', 'SP2', 'I1', 'I2', 'D1', 'D2', 'F1', 'F2', 'N1', 'P1', 'B1', 'G1', 'SC0'];
+        let syncDetails = [];
+
+        for (let i = 0; i < leagues.length; i += 4) {
+          const batch = leagues.slice(i, i + 4);
+          await Promise.all(batch.map(async (leagueCode) => {
+            try {
+              const csvUrl = `https://www.football-data.co.uk/mmz4281/2627/${leagueCode}.csv`;
+              const response = await fetch(csvUrl);
+              if (!response.ok) return;
+              
+              const csvText = await response.text();
+              const lines = csvText.trim().split("\n");
+              if (lines.length < 2) return;
+
+              const headers = lines[0].split(",").map(h => h.trim());
+              const getIndex = (name) => headers.indexOf(name);
+              
+              const idxDate = getIndex("Date");
+              const idxHome = getIndex("HomeTeam");
+              const idxAway = getIndex("AwayTeam");
+              const idxFTHG = getIndex("FTHG");
+              const idxFTAG = getIndex("FTAG");
+              if (idxDate === -1 || idxHome === -1) return;
+
+              for (let j = 1; j < lines.length; j++) {
+                const row = lines[j].split(",");
+                if (row.length < headers.length) continue;
+
+                const rawDate = row[idxDate];
+                let formattedDate = rawDate;
+                if (rawDate && rawDate.includes("/")) {
+                  const parts = rawDate.split("/");
+                  if (parts.length === 3) {
+                    let year = parts[2];
+                    if (year.length === 2) year = "20" + year;
+                    formattedDate = `${year}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+                  }
+                }
+
+                const fthg = row[idxFTHG] ? parseInt(row[idxFTHG]) : null;
+                const ftag = row[idxFTAG] ? parseInt(row[idxFTAG]) : null;
+
+                await env.DB.prepare(`
+                  INSERT INTO raw_matches (league, match_date, home_team, away_team, home_goals, away_goals)
+                  VALUES (?, ?, ?, ?, ?, ?)
+                  ON CONFLICT(league, match_date, home_team, away_team) 
+                  DO UPDATE SET home_goals = excluded.home_goals, away_goals = excluded.away_goals, updated_at = CURRENT_TIMESTAMP
+                `).bind(leagueCode, formattedDate, row[idxHome], row[idxAway], fthg, ftag).run();
+              }
+            } catch (e) {}
+          }));
+        }
+
+        // အနာဂတ်ပွဲစဉ်များ ဆွဲမယ်
+        try {
+          const fixRes = await fetch("https://www.football-data.co.uk/fixtures.csv");
+          if (fixRes.ok) {
+            const fixText = await fixRes.text();
+            const fixLines = fixText.trim().split("\n");
+            const fixHeaders = fixLines[0].split(",").map(h => h.trim());
+            const fIdxDate = fixHeaders.indexOf("Date");
+            const fIdxHome = fixHeaders.indexOf("HomeTeam");
+            const fIdxAway = fixHeaders.indexOf("AwayTeam");
+            const fIdxDiv = fixHeaders.indexOf("Div");
+            
+            for (let i = 1; i < fixLines.length; i++) {
+              const row = fixLines[i].split(",");
+              if (row.length < fixHeaders.length) continue;
+              if (!leagues.includes(row[fIdxDiv])) continue;
+
+              const rawDate = row[fIdxDate];
+              let formattedDate = rawDate;
+              if (rawDate && rawDate.includes("/")) {
+                const parts = rawDate.split("/");
+                if (parts.length === 3) {
+                  let year = parts[2];
+                  if (year.length === 2) year = "20" + year;
+                  formattedDate = `${year}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+                }
+              }
+
+              await env.DB.prepare(`
+                INSERT INTO raw_matches (league, match_date, home_team, away_team)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(league, match_date, home_team, away_team) DO NOTHING
+              `).bind(row[fIdxDiv], formattedDate, row[fIdxHome], row[fIdxAway]).run();
+            }
+          }
+        } catch(e) {}
+
+        // ၂။ ဆွဲပြီးသား Data တွေနဲ့ တွက်မယ်
         const { results: matches } = await env.DB.prepare(`
           SELECT DISTINCT id, league, match_date, home_team, away_team, total_line, ah_line
           FROM raw_matches 
@@ -235,7 +209,6 @@ export default {
         `).bind(dateToday, dateTomorrow).all();
 
         let calculated = [];
-
         for (const match of matches) {
           const { results: homeOverall } = await env.DB.prepare(`
             SELECT home_goals, away_goals FROM raw_matches 
@@ -275,15 +248,19 @@ export default {
             league: match.league,
             match: `${match.home_team} vs ${match.away_team}`,
             date: match.match_date,
-            total_line: match.total_line,
-            ah_line: match.ah_line,
             y_match: yMatchStatus,
             overall_point: overallPoints.toFixed(2),
             ha_point: haPoints.toFixed(2)
           });
         }
 
-        return new Response(JSON.stringify({ status: "success", date_range: `${dateToday} to ${dateTomorrow}`, total_matches_found: calculated.length, matches: calculated }, null, 2), { headers: { "Content-Type": "application/json" } });
+        return new Response(JSON.stringify({ 
+          status: "success", 
+          date_range: `${dateToday} to ${dateTomorrow}`,
+          total_matches_found: calculated.length, 
+          matches: calculated 
+        }, null, 2), { headers: { "Content-Type": "application/json" } });
+
       } catch (err) {
         return new Response(JSON.stringify({ status: "error", message: err.message }, null, 2), { status: 500, headers: { "Content-Type": "application/json" } });
       }
