@@ -183,12 +183,10 @@ export default {
     // 5. Sync InferSports Odds (Total & AH)
 if (url.pathname === "/sync-odds") {
   try {
-    // API Key မပါရင် Error ပြမယ်
     if (!env.INFER_API_KEY) {
       throw new Error("INFER_API_KEY မထည့်ရသေးပါ။ Secret ထဲမှာ အရင်ထည့်ပါ။");
     }
 
-    // Limit မကျော်အောင် ပွဲ ၅ ပွဲပဲ ခေါ်မယ် (လိုအပ်ရင် နောက်မှ တိုးမယ်)
     const apiUrl = "https://api.infersports.dev/v1/events?sport=football&status=scheduled&limit=5";
     
     const apiRes = await fetch(apiUrl, {
@@ -198,25 +196,23 @@ if (url.pathname === "/sync-odds") {
       }
     });
 
-    if (!apiRes.ok) {
-      throw new Error(`API Error: ${apiRes.status} ${apiRes.statusText}`);
-    }
+    if (!apiRes.ok) throw new Error(`API Error: ${apiRes.status}`);
 
     const apiData = await apiRes.json();
-    const events = apiData.data || apiData.events || []; // API Response ပုံစံအပေါ် မူတည်ပြီး ယူမယ်
+    const events = apiData.data || apiData.events || [];
     
     if (events.length === 0) {
-      return new Response(JSON.stringify({ status: "success", message: "No scheduled events found from API." }), {
+      return new Response(JSON.stringify({ status: "success", message: "No scheduled events found." }), {
         headers: { "Content-Type": "application/json" }
       });
     }
 
     let syncedCount = 0;
+    let sampleOdds = null; // စမ်းသပ်ရန် ပထမဆုံး ပွဲရဲ့ odds ကို သိမ်းထားမယ်
 
     for (const event of events) {
       const eventId = event.id;
       
-      // Odds ကို သီးသန့် ခေါ်မယ်
       const oddsUrl = `https://api.infersports.dev/v1/events/${eventId}/odds?markets=totals,asian_handicap`;
       const oddsRes = await fetch(oddsUrl, {
         headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` }
@@ -227,28 +223,55 @@ if (url.pathname === "/sync-odds") {
 
       if (oddsRes.ok) {
         const oddsData = await oddsRes.json();
-        // API Response ထဲက Line တွေကို ဆွဲထုတ်မယ် (Response Structure ပေါ်မူတည်ပြီး နည်းနည်း ပြင်ရနိုင်ပါတယ်)
-        const totals = oddsData.markets?.find(m => m.name === "totals");
-        const ah = oddsData.markets?.find(m => m.name === "asian_handicap");
         
-        if (totals && totals.outcomes) totalLine = totals.outcomes[0]?.line || null;
-        if (ah && ah.outcomes) ahLine = ah.outcomes[0]?.line || null;
+        // ပထမဆုံး ပွဲရဲ့ odds data ကို ယူထားမယ် (ဘယ်လို format လဲ ကြည့်ဖို့)
+        if (!sampleOdds) sampleOdds = oddsData;
+
+        // API Structure ကို ဖတ်ပြီး Line တွေ ဆွဲထုတ်မယ်
+        // (API ရဲ့ Response ပုံစံအပေါ် မူတည်ပြီး နည်းနည်း ပြင်ရနိုင်ပါတယ်)
+        const markets = oddsData.markets || oddsData.data?.markets || [];
+        
+        const totals = markets.find(m => m.name === "totals" || m.key === "totals");
+        const ah = markets.find(m => m.name === "asian_handicap" || m.key === "asian_handicap");
+        
+        if (totals && totals.outcomes) {
+          // Over ရဲ့ line ကို ယူမယ် (ဥပမာ - 2.5)
+          const over = totals.outcomes.find(o => o.name === "Over" || o.type === "over");
+          if (over) totalLine = parseFloat(over.line || over.handicap);
+        }
+        
+        if (ah && ah.outcomes) {
+          // Home ရဲ့ line ကို ယူမယ်
+          const homeAh = ah.outcomes.find(o => o.name === "Home" || o.type === "home");
+          if (homeAh) ahLine = parseFloat(homeAh.line || homeAh.handicap);
+        }
       }
 
-      // D1 ထဲကို Update လုပ်မယ် (ပွဲစဉ်နာမည်တွေ တိုက်စစ်ဖို့ လိုပါတယ်၊ ဒါပေမယ့် အခုတော့ event_id နဲ့ပဲ သိမ်းထားပါမယ်)
-      // နောက်တစ်ဆင့်မှာ Team Mapping လုပ်မှာမို့ အခုတော့ raw_matches ထဲက ပွဲစဉ်တွေနဲ့ ချိတ်ဖို့ ကျွန်တော်တို့က UPDATE လုပ်ပါမယ်။
-      // (ပွဲစဉ်နာမည် တိုက်စစ်တာကို နောက်အဆင့်မှာ လုပ်ပါမယ်)
-      
-      // ဒီနေရာမှာ အခုချက်ချင်း ချိတ်လို့မရသေးလို့ Log ပဲ ထုတ်ထားပါတယ်။
-      console.log(`Event: ${event.home_team?.name} vs ${event.away_team?.name} | Total: ${totalLine} | AH: ${ahLine}`);
+      // D1 ထဲကို သိမ်းမယ် (အသင်းနာမည်တွေ CSV နဲ့ မတူသေးလည်း API နာမည်အတိုင်း သိမ်းထားမယ်)
+      await env.DB.prepare(`
+        INSERT INTO raw_matches (league, match_date, home_team, away_team, total_line, ah_line)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(league, match_date, home_team, away_team) 
+        DO UPDATE SET 
+          total_line = excluded.total_line,
+          ah_line = excluded.ah_line,
+          updated_at = CURRENT_TIMESTAMP
+      `).bind(
+        event.league?.name || "UNKNOWN", 
+        event.scheduled_at.split("T")[0], 
+        event.home_team?.name, 
+        event.away_team?.name, 
+        totalLine, 
+        ahLine
+      ).run();
       
       syncedCount++;
     }
 
     return new Response(JSON.stringify({ 
       status: "success", 
-      message: `Successfully fetched odds for ${syncedCount} events.`, 
-      sample_data: events[0] // API က ဘာတွေ ပြန်ပေးလဲ ကြည့်ဖို့
+      message: `Successfully fetched & saved odds for ${syncedCount} events.`,
+      sample_odds_data: sampleOdds // API က Odds ကို ဘယ်လို ပုံစံပေးလဲ ကြည့်ဖို့
     }, null, 2), { headers: { "Content-Type": "application/json" } });
 
   } catch (err) {
