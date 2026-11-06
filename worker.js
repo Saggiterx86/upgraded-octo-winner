@@ -236,17 +236,31 @@ export default {
         `).bind(dateToday, dateTomorrow).all();
 
         let calculated = [];
-        for (const match of matches) {
-          const homeOverall = await lastN(env, "home_team", match.home_team, match.match_date, 5);
-          const awayOverall = await lastN(env, "away_team", match.away_team, match.match_date, 5);
-          const overallPoints = (sumGoals(homeOverall) + sumGoals(awayOverall)) / 10;
+for (const match of matches) {
+  // 1. Overall (အိမ်ကွင်း ၅ ပွဲ + အဝေးကွင်း ၅ ပွဲ = စုစုပေါင်း ၁၀ ပွဲ ရှိမရှိ စစ်မယ်)
+  const homeOverall = await lastN(env, "home_team", match.home_team, match.match_date, 5);
+  const awayOverall = await lastN(env, "away_team", match.away_team, match.match_date, 5);
+  
+  // 2. HA (အိမ်ကွင်း ၅ ပွဲ + အဝေးကွင်း ၅ ပွဲ)
+  const homeHA = await lastN(env, "home_team_home", match.home_team, match.match_date, 5);
+  const awayHA = await lastN(env, "away_team_away", match.away_team, match.match_date, 5);
 
-          const homeHA = await lastN(env, "home_team_home", match.home_team, match.match_date, 5);
-          const awayHA = await lastN(env, "away_team_away", match.away_team, match.match_date, 5);
-          const haPoints = (sumGoals(homeHA) + sumGoals(awayHA)) / 10;
+  let overallPoints = 0;
+  let haPoints = 0;
 
-          const yMatch = (overallPoints > 2.5 && haPoints > 2.5) ? "YES" : "NO";
-          const rulesHit = (overallPoints > 2.5 && haPoints > 2.5) ? "BOTH" : (overallPoints > 2.5 ? "OVERALL_ONLY" : (haPoints > 2.5 ? "HA_ONLY" : "NONE"));
+  // ပွဲအရေအတွက် ၁၀ ပွဲ ပြည့်မှသာ တွက်မယ် (မပြည့်ရင် 0 ပေးမယ်)
+  const totalOverallMatches = homeOverall.length + awayOverall.length;
+  const totalHAMatches = homeHA.length + awayHA.length;
+
+  if (totalOverallMatches === 10) {
+    overallPoints = (sumGoals(homeOverall) + sumGoals(awayOverall)) / 10;
+  }
+  if (totalHAMatches === 10) {
+    haPoints = (sumGoals(homeHA) + sumGoals(awayHA)) / 10;
+  }
+
+  const yMatch = (overallPoints > 2.5 && haPoints > 2.5) ? "YES" : "NO";
+  const rulesHit = (overallPoints > 2.5 && haPoints > 2.5) ? "BOTH" : (overallPoints > 2.5 ? "OVERALL_ONLY" : (haPoints > 2.5 ? "HA_ONLY" : "NONE"));
 
           await env.DB.prepare(`
             INSERT INTO bot_analysis (match_id, y_match_status, ha_points, rules_hit, day_theory_hit)
