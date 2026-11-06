@@ -180,7 +180,84 @@ export default {
         });
       }
     }
+    // 5. Sync InferSports Odds (Total & AH)
+if (url.pathname === "/sync-odds") {
+  try {
+    // API Key မပါရင် Error ပြမယ်
+    if (!env.INFER_API_KEY) {
+      throw new Error("INFER_API_KEY မထည့်ရသေးပါ။ Secret ထဲမှာ အရင်ထည့်ပါ။");
+    }
 
+    // Limit မကျော်အောင် ပွဲ ၅ ပွဲပဲ ခေါ်မယ် (လိုအပ်ရင် နောက်မှ တိုးမယ်)
+    const apiUrl = "https://api.infersports.dev/v1/events?sport=football&status=scheduled&limit=5";
+    
+    const apiRes = await fetch(apiUrl, {
+      headers: { 
+        "Authorization": `Bearer ${env.INFER_API_KEY}`,
+        "Content-Type": "application/json"
+      }
+    });
+
+    if (!apiRes.ok) {
+      throw new Error(`API Error: ${apiRes.status} ${apiRes.statusText}`);
+    }
+
+    const apiData = await apiRes.json();
+    const events = apiData.data || apiData.events || []; // API Response ပုံစံအပေါ် မူတည်ပြီး ယူမယ်
+    
+    if (events.length === 0) {
+      return new Response(JSON.stringify({ status: "success", message: "No scheduled events found from API." }), {
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
+    let syncedCount = 0;
+
+    for (const event of events) {
+      const eventId = event.id;
+      
+      // Odds ကို သီးသန့် ခေါ်မယ်
+      const oddsUrl = `https://api.infersports.dev/v1/events/${eventId}/odds?markets=totals,asian_handicap`;
+      const oddsRes = await fetch(oddsUrl, {
+        headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` }
+      });
+
+      let totalLine = null;
+      let ahLine = null;
+
+      if (oddsRes.ok) {
+        const oddsData = await oddsRes.json();
+        // API Response ထဲက Line တွေကို ဆွဲထုတ်မယ် (Response Structure ပေါ်မူတည်ပြီး နည်းနည်း ပြင်ရနိုင်ပါတယ်)
+        const totals = oddsData.markets?.find(m => m.name === "totals");
+        const ah = oddsData.markets?.find(m => m.name === "asian_handicap");
+        
+        if (totals && totals.outcomes) totalLine = totals.outcomes[0]?.line || null;
+        if (ah && ah.outcomes) ahLine = ah.outcomes[0]?.line || null;
+      }
+
+      // D1 ထဲကို Update လုပ်မယ် (ပွဲစဉ်နာမည်တွေ တိုက်စစ်ဖို့ လိုပါတယ်၊ ဒါပေမယ့် အခုတော့ event_id နဲ့ပဲ သိမ်းထားပါမယ်)
+      // နောက်တစ်ဆင့်မှာ Team Mapping လုပ်မှာမို့ အခုတော့ raw_matches ထဲက ပွဲစဉ်တွေနဲ့ ချိတ်ဖို့ ကျွန်တော်တို့က UPDATE လုပ်ပါမယ်။
+      // (ပွဲစဉ်နာမည် တိုက်စစ်တာကို နောက်အဆင့်မှာ လုပ်ပါမယ်)
+      
+      // ဒီနေရာမှာ အခုချက်ချင်း ချိတ်လို့မရသေးလို့ Log ပဲ ထုတ်ထားပါတယ်။
+      console.log(`Event: ${event.home_team?.name} vs ${event.away_team?.name} | Total: ${totalLine} | AH: ${ahLine}`);
+      
+      syncedCount++;
+    }
+
+    return new Response(JSON.stringify({ 
+      status: "success", 
+      message: `Successfully fetched odds for ${syncedCount} events.`, 
+      sample_data: events[0] // API က ဘာတွေ ပြန်ပေးလဲ ကြည့်ဖို့
+    }, null, 2), { headers: { "Content-Type": "application/json" } });
+
+  } catch (err) {
+    return new Response(JSON.stringify({ status: "error", message: err.message }, null, 2), { 
+      status: 500,
+      headers: { "Content-Type": "application/json" } 
+    });
+  }
+}
     // 5. Alert Endpoint
     if (url.pathname === "/alert" && request.method === "POST") {
       return new Response("Alert endpoint ready", { status: 200 });
