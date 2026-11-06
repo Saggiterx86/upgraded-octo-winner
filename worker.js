@@ -22,103 +22,117 @@ export default {
       return new Response("Football Bot Worker is Running!", { status: 200 });
     }
 
-    // 2. Sync CSV (Results & Fixtures)
-    if (url.pathname === "/sync-csv") {
-      try {
-        let totalInserted = 0;
-        let summary = [];
-
-        for (const leagueCode of ourLeagues) {
-          let csvUrl = "";
-          if (["SWE", "DNK"].includes(leagueCode)) {
-            csvUrl = `https://www.football-data.co.uk/new/${leagueCode}.csv`;
-          } else {
-            csvUrl = `https://www.football-data.co.uk/mmz4281/2627/${leagueCode}.csv`;
-          }
-          
-          const response = await fetch(csvUrl);
-          if (!response.ok) continue; 
-          
-          const csvText = await response.text();
-          const lines = csvText.trim().split("\n");
-          if (lines.length < 2) continue;
-
-          const headers = lines[0].split(",").map(h => h.trim());
-          const getIndex = (name) => headers.indexOf(name);
-          
-          const idxDate = getIndex("Date");
-          const idxHome = getIndex("HomeTeam");
-          const idxAway = getIndex("AwayTeam");
-          const idxFTHG = getIndex("FTHG");
-          const idxFTAG = getIndex("FTAG");
-
-          if (idxDate === -1 || idxHome === -1) continue;
-
-          let inserted = 0;
-          for (let i = 1; i < lines.length; i++) {
-            const row = lines[i].split(",");
-            if (row.length < headers.length) continue;
-
-            const date = row[idxDate];
-            const home = row[idxHome];
-            const away = row[idxAway];
-            const fthg = row[idxFTHG] ? parseInt(row[idxFTHG]) : null;
-            const ftag = row[idxFTAG] ? parseInt(row[idxFTAG]) : null;
-
-            await env.DB.prepare(`
-              INSERT INTO raw_matches (league, match_date, home_team, away_team, home_goals, away_goals)
-              VALUES (?, ?, ?, ?, ?, ?)
-              ON CONFLICT(league, match_date, home_team, away_team) 
-              DO UPDATE SET 
-                home_goals = excluded.home_goals,
-                away_goals = excluded.away_goals,
-                updated_at = CURRENT_TIMESTAMP
-            `).bind(leagueCode, date, home, away, fthg, ftag).run();
-            inserted++;
-          }
-          summary.push({ league: leagueCode, rows: inserted });
-          totalInserted += inserted;
-        }
-
-        // ပြီးရင် Fixtures.csv ကိုပါ ဆွဲထည့်မယ်
-        const fixturesUrl = "https://www.football-data.co.uk/fixtures.csv";
-        const fixRes = await fetch(fixturesUrl);
-        if (fixRes.ok) {
-          const fixText = await fixRes.text();
-          const fixLines = fixText.trim().split("\n");
-          const fixHeaders = fixLines[0].split(",").map(h => h.trim());
-          const fIdxDate = fixHeaders.indexOf("Date");
-          const fIdxHome = fixHeaders.indexOf("HomeTeam");
-          const fIdxAway = fixHeaders.indexOf("AwayTeam");
-          const fIdxDiv = fixHeaders.indexOf("Div");
-
-          if (fIdxDate !== -1 && fIdxHome !== -1) {
-            let fixInserted = 0;
-            for (let i = 1; i < fixLines.length; i++) {
-              const row = fixLines[i].split(",");
-              if (row.length < fixHeaders.length) continue;
-              const div = row[fIdxDiv];
-              if (!ourLeagues.includes(div)) continue;
-
-              await env.DB.prepare(`
-                INSERT INTO raw_matches (league, match_date, home_team, away_team)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(league, match_date, home_team, away_team) DO NOTHING
-              `).bind(div, row[fIdxDate], row[fIdxHome], row[fIdxAway]).run();
-              fixInserted++;
-            }
-            summary.push({ league: "FIXTURES", rows: fixInserted });
-          }
-        }
-
-        return new Response(JSON.stringify({ status: "success", message: "Data synced!", details: summary }, null, 2), { 
-          headers: { "Content-Type": "application/json" } 
-        });
-
-      } catch (err) {
-        return new Response("Sync Error: " + err.message, { status: 500 });
-      }
+    // 2. Sync CSV (One League at a Time to avoid limits)
+if (url.pathname === "/sync-csv") {
+  try {
+    // URL မှာ ဘယ် league လဲ စစ်မယ် (မပါရင် E0 ကို default ထားမယ်)
+    const leagueCode = url.searchParams.get("league") || "E0";
+    let csvUrl = "";
+    
+    if (["SWE", "DNK"].includes(leagueCode)) {
+      csvUrl = `https://www.football-data.co.uk/new/${leagueCode}.csv`;
+    } else {
+      csvUrl = `https://www.football-data.co.uk/mmz4281/2627/${leagueCode}.csv`;
     }
+    
+    const response = await fetch(csvUrl);
+    if (!response.ok) {
+      return new Response(`League ${leagueCode} CSV not found.`, { status: 404 });
+    }
+    
+    const csvText = await response.text();
+    const lines = csvText.trim().split("\n");
+    const headers = lines[0].split(",").map(h => h.trim());
+    const getIndex = (name) => headers.indexOf(name);
+    
+    const idxDate = getIndex("Date");
+    const idxHome = getIndex("HomeTeam");
+    const idxAway = getIndex("AwayTeam");
+    const idxFTHG = getIndex("FTHG");
+    const idxFTAG = getIndex("FTAG");
+
+    if (idxDate === -1 || idxHome === -1) {
+      return new Response(`Invalid CSV structure for ${leagueCode}`, { status: 400 });
+    }
+
+    let insertedCount = 0;
+    for (let i = 1; i < lines.length; i++) {
+      const row = lines[i].split(",");
+      if (row.length < headers.length) continue;
+
+      const date = row[idxDate];
+      const home = row[idxHome];
+      const away = row[idxAway];
+      const fthg = row[idxFTHG] ? parseInt(row[idxFTHG]) : null;
+      const ftag = row[idxFTAG] ? parseInt(row[idxFTAG]) : null;
+
+      await env.DB.prepare(`
+        INSERT INTO raw_matches (league, match_date, home_team, away_team, home_goals, away_goals)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(league, match_date, home_team, away_team) 
+        DO UPDATE SET 
+          home_goals = excluded.home_goals,
+          away_goals = excluded.away_goals,
+          updated_at = CURRENT_TIMESTAMP
+      `).bind(leagueCode, date, home, away, fthg, ftag).run();
+      insertedCount++;
+    }
+
+    return new Response(JSON.stringify({ 
+      status: "success", 
+      league: leagueCode,
+      rows_inserted: insertedCount,
+      message: "Sync completed for this league." 
+    }, null, 2), { headers: { "Content-Type": "application/json" } });
+
+  } catch (err) {
+    return new Response("Sync Error: " + err.message, { status: 500 });
+  }
+}
+
+// 2.1 Sync Fixtures (သီးသန့် run ဖို့)
+if (url.pathname === "/sync-fixtures") {
+  try {
+    const fixturesUrl = "https://www.football-data.co.uk/fixtures.csv";
+    const response = await fetch(fixturesUrl);
+    if (!response.ok) throw new Error("Fixtures CSV ဆွဲလို့မရပါ");
+
+    const csvText = await response.text();
+    const lines = csvText.trim().split("\n");
+    const headers = lines[0].split(",").map(h => h.trim());
+    const idxDate = headers.indexOf("Date");
+    const idxHome = headers.indexOf("HomeTeam");
+    const idxAway = headers.indexOf("AwayTeam");
+    const idxDiv = headers.indexOf("Div");
+
+    // ငါတို့လိုချင်တဲ့ လိဂ်တွေပဲ ယူမယ်
+    const ourLeagues = ['E0', 'E1', 'E2', 'E3', 'EC', 'SP1', 'SP2', 'I1', 'I2', 'D1', 'D2', 'F1', 'F2', 'N1', 'P1', 'B1', 'G1', 'SC0', 'SWE', 'DNK'];
+    let insertedCount = 0;
+
+    for (let i = 1; i < lines.length; i++) {
+      const row = lines[i].split(",");
+      if (row.length < headers.length) continue;
+
+      const div = row[idxDiv];
+      if (!ourLeagues.includes(div)) continue;
+
+      await env.DB.prepare(`
+        INSERT INTO raw_matches (league, match_date, home_team, away_team)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(league, match_date, home_team, away_team) DO NOTHING
+      `).bind(div, row[idxDate], row[idxHome], row[idxAway]).run();
+      insertedCount++;
+    }
+
+    return new Response(JSON.stringify({ 
+      status: "success", 
+      message: `Fixtures synced: ${insertedCount} rows added.` 
+    }, null, 2), { headers: { "Content-Type": "application/json" } });
+
+  } catch (err) {
+    return new Response("Sync Error: " + err.message, { status: 500 });
+  }
+}
 
     // 5. Sync InferSports Odds (Debug Match)
 if (url.pathname === "/sync-odds") {
