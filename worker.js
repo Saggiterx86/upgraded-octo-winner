@@ -267,26 +267,29 @@ export default {
           let homeOverallGoals = homeOverall.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
           let awayOverallGoals = awayOverall.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
 
-          const totalYGoals = homeOverallGoals + awayOverallGoals;
-          const yMatchAvg = totalYGoals / 10;
-          const yMatchStatus = yMatchAvg > 2.5 ? "YES" : "NO";
+          // Overall Point တွက်မယ် (၁၀ ပွဲစာ ဂိုးပေါင်း / 10)
+let homeOverallGoals = homeOverall.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
+let awayOverallGoals = awayOverall.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
+const overallPoints = (homeOverallGoals + awayOverallGoals) / 10;
 
-          let homeHAPoints = homeHA.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
-          let awayHAPoints = awayHA.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
-          
-          const haCount = homeHA.length + awayHA.length;
-          const haPointsAvg = haCount > 0 ? ((homeHAPoints + awayHAPoints) / haCount) : 0;
+// HA Point တွက်မယ် (အိမ်ကွင်း ၅ ပွဲ + အဝေးကွင်း ၅ ပွဲ ဂိုးပေါင်း / 10)
+let homeHAPoints = homeHA.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
+let awayHAPoints = awayHA.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
+const haPoints = (homeHAPoints + awayHAPoints) / 10;
 
-          calculated.push({
-            league: match.league,
-            match: `${match.home_team} vs ${match.away_team}`,
-            date: match.match_date,
-            total_line: match.total_line,
-            ah_line: match.ah_line,
-            y_match: yMatchStatus,
-            y_avg: yMatchAvg.toFixed(2),
-            ha_points: haPointsAvg.toFixed(2)
-          });
+// Y Match က Points နှစ်မျိုးလုံး 2.5 ထက် ကြီးမှ YES ပေးမယ်
+const yMatchStatus = (overallPoints > 2.5 && haPoints > 2.5) ? "YES" : "NO";
+
+calculated.push({
+  league: match.league,
+  match: `${match.home_team} vs ${match.away_team}`,
+  date: match.match_date,
+  total_line: match.total_line,
+  ah_line: match.ah_line,
+  y_match: yMatchStatus,
+  overall_point: overallPoints.toFixed(2),
+  ha_point: haPoints.toFixed(2)
+});
         }
 
         return new Response(JSON.stringify({ 
