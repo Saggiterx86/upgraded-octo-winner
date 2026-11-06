@@ -7,17 +7,20 @@ export default {
       return new Response("Football Bot Worker is Running!", { status: 200 });
     }
 
-    // 2. Database Check
-    if (url.pathname === "/test-db") {
-      try {
-        const { results } = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
-        return new Response(JSON.stringify({ status: "success", tables: results }, null, 2), {
-          headers: { "Content-Type": "application/json" }
-        });
-      } catch (err) {
-        return new Response("Database Error: " + err.message, { status: 500 });
-      }
-    }
+    // 2. Database Check (Sample Data)
+if (url.pathname === "/test-db") {
+  try {
+    const { results: matches } = await env.DB.prepare("SELECT * FROM raw_matches LIMIT 3").all();
+    return new Response(JSON.stringify({ 
+      status: "success", 
+      sample_matches: matches 
+    }, null, 2), {
+      headers: { "Content-Type": "application/json" }
+    });
+  } catch (err) {
+    return new Response("Database Error: " + err.message, { status: 500 });
+  }
+}
 
     // 3. CSV Sync
     if (url.pathname === "/sync-csv") {
