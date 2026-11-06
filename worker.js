@@ -15,6 +15,36 @@ export default {
         return json({ status: "error", message: err.message }, 500);
       }
     }
+    // ==========================================
+// DEBUG DATA (ဒေတာတွေ မှန်မမှန် စစ်ရန်)
+// ==========================================
+if (url.pathname === "/debug-data") {
+  try {
+    const team = url.searchParams.get("team") || "Mainz";
+    const beforeDate = url.searchParams.get("date") || "2026-11-07";
+
+    const homeOverall = await lastN(env, "home_team", team, beforeDate, 5);
+    const homeHA = await lastN(env, "home_team_home", team, beforeDate, 5);
+
+    const overallSum = sumGoals(homeOverall);
+    const haSum = sumGoals(homeHA);
+
+    return json({
+      team: team,
+      before_date: beforeDate,
+      overall_matches_found: homeOverall.length,
+      overall_matches_data: homeOverall,
+      overall_sum_goals: overallSum,
+      overall_point_calculated: overallSum / 10,
+      ha_matches_found: homeHA.length,
+      ha_matches_data: homeHA,
+      ha_sum_goals: haSum,
+      ha_point_calculated: haSum / 10
+    });
+  } catch (err) {
+    return json({ status: "error", message: err.message }, 500);
+  }
+}
 
     if (url.pathname === "/sync-csv") {
       try {
