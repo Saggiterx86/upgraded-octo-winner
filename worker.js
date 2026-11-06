@@ -180,77 +180,109 @@ if (url.pathname === "/sync-odds") {
   }
 }
 
-    // 4. Calculate Logic (Y Match & HA Points)
-    if (url.pathname === "/calc-y-match") {
-      try {
-        const { results: matches } = await env.DB.prepare(
-          "SELECT * FROM raw_matches WHERE home_goals IS NOT NULL ORDER BY match_date DESC LIMIT 5"
-        ).all();
+// 4. Daily Scan (ယနေ့ 06:30 မှ မနက်ဖြန် 06:29 အထိ)
+if (url.pathname === "/daily-scan") {
+  try {
+    // မြန်မာအချိန် (UTC+6:30) ကို တွက်မယ်
+    const now = new Date();
+    const mmOffset = 6.5 * 60 * 60 * 1000; // 6:30 hours in milliseconds
+    const mmNow = new Date(now.getTime() + mmOffset);
 
-        let calculated = [];
+    // ဒီနေ့ 06:30 ကို ရှာမယ်
+    const todayStart = new Date(mmNow);
+    todayStart.setUTCHours(0, 0, 0, 0); // မြန်မာရက်စွဲရဲ့ သုညနာရီ
+    todayStart.setUTCHours(0, 0, 0, 0); 
+    // 06:30 ကို သတ်မှတ်
+    const startTimeMM = new Date(todayStart.getTime());
+    startTimeMM.setUTCHours(0, 0, 0, 0); // Reset
+    startTimeMM.setTime(startTimeMM.getTime() + (6.5 * 60 * 60 * 1000)); 
 
-        for (const match of matches) {
-          const { results: homeOverall } = await env.DB.prepare(`
-            SELECT home_goals, away_goals FROM raw_matches 
-            WHERE (home_team = ? OR away_team = ?) AND match_date < ? AND home_goals IS NOT NULL
-            ORDER BY match_date DESC LIMIT 5
-          `).bind(match.home_team, match.home_team, match.match_date).all();
+    // မနက်ဖြန် 06:29 ကို ရှာမယ်
+    const endTimeMM = new Date(startTimeMM.getTime() + (24 * 60 * 60 * 1000) - (60 * 1000)); 
 
-          const { results: awayOverall } = await env.DB.prepare(`
-            SELECT home_goals, away_goals FROM raw_matches 
-            WHERE (home_team = ? OR away_team = ?) AND match_date < ? AND home_goals IS NOT NULL
-            ORDER BY match_date DESC LIMIT 5
-          `).bind(match.away_team, match.away_team, match.match_date).all();
+    // Database ထဲမှာ သိမ်းထားတဲ့ ရက်စွဲပုံစံက DD/MM/YYYY ဖြစ်နေတဲ့အတွက်
+    // ဒီနေ့နဲ့ မနက်ဖြန် ရက်စွဲတွေကို ဆွဲထုတ်မယ်
+    const fmt = (d) => {
+      const day = String(d.getUTCDate()).padStart(2, '0');
+      const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const year = d.getUTCFullYear();
+      return `${day}/${month}/${year}`;
+    };
 
-          const { results: homeHA } = await env.DB.prepare(`
-            SELECT home_goals, away_goals FROM raw_matches 
-            WHERE home_team = ? AND match_date < ? AND home_goals IS NOT NULL
-            ORDER BY match_date DESC LIMIT 5
-          `).bind(match.home_team, match.match_date).all();
+    const dateToday = fmt(startTimeMM);
+    const dateTomorrow = fmt(endTimeMM);
 
-          const { results: awayHA } = await env.DB.prepare(`
-            SELECT home_goals, away_goals FROM raw_matches 
-            WHERE away_team = ? AND match_date < ? AND home_goals IS NOT NULL
-            ORDER BY match_date DESC LIMIT 5
-          `).bind(match.away_team, match.match_date).all();
+    // Database ထဲက ဒီနေ့နဲ့ မနက်ဖြန် ရက်စွဲရှိတဲ့ ပွဲစဉ်တွေကို ဆွဲမယ်
+    const { results: matches } = await env.DB.prepare(`
+      SELECT * FROM raw_matches 
+      WHERE match_date IN (?, ?) AND home_goals IS NULL
+      ORDER BY league, match_date
+    `).bind(dateToday, dateTomorrow).all();
 
-          let homeOverallGoals = homeOverall.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
-          let awayOverallGoals = awayOverall.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
+    let calculated = [];
 
-          const totalYGoals = homeOverallGoals + awayOverallGoals;
-          const yMatchAvg = totalYGoals / 10;
-          const yMatchStatus = yMatchAvg > 2.5 ? "YES" : "NO";
+    for (const match of matches) {
+      // Y Match အတွက် ရဂိုး + ပေးဂိုး
+      const { results: homeOverall } = await env.DB.prepare(`
+        SELECT home_goals, away_goals FROM raw_matches 
+        WHERE (home_team = ? OR away_team = ?) AND match_date < ? AND home_goals IS NOT NULL
+        ORDER BY match_date DESC LIMIT 5
+      `).bind(match.home_team, match.home_team, match.match_date).all();
 
-          let homeHAPoints = homeHA.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
-          let awayHAPoints = awayHA.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
-          
-          const haCount = homeHA.length + awayHA.length;
-          const haPointsAvg = haCount > 0 ? ((homeHAPoints + awayHAPoints) / haCount) : 0;
+      const { results: awayOverall } = await env.DB.prepare(`
+        SELECT home_goals, away_goals FROM raw_matches 
+        WHERE (home_team = ? OR away_team = ?) AND match_date < ? AND home_goals IS NOT NULL
+        ORDER BY match_date DESC LIMIT 5
+      `).bind(match.away_team, match.away_team, match.match_date).all();
 
-          calculated.push({
-            match: `${match.home_team} vs ${match.away_team}`,
-            league: match.league,
-            date: match.match_date,
-            y_match: yMatchStatus,
-            y_avg: yMatchAvg.toFixed(2),
-            ha_points: haPointsAvg.toFixed(2)
-          });
-        }
+      const { results: homeHA } = await env.DB.prepare(`
+        SELECT home_goals, away_goals FROM raw_matches 
+        WHERE home_team = ? AND match_date < ? AND home_goals IS NOT NULL
+        ORDER BY match_date DESC LIMIT 5
+      `).bind(match.home_team, match.match_date).all();
 
-        return new Response(JSON.stringify({ 
-          status: "success", 
-          message: `Calculated ${calculated.length} matches`,
-          data: calculated
-        }, null, 2), { headers: { "Content-Type": "application/json" } });
+      const { results: awayHA } = await env.DB.prepare(`
+        SELECT home_goals, away_goals FROM raw_matches 
+        WHERE away_team = ? AND match_date < ? AND home_goals IS NOT NULL
+        ORDER BY match_date DESC LIMIT 5
+      `).bind(match.away_team, match.match_date).all();
 
-      } catch (err) {
-        return new Response(JSON.stringify({ status: "error", message: err.message }, null, 2), { 
-          status: 500,
-          headers: { "Content-Type": "application/json" } 
-        });
-      }
+      let homeOverallGoals = homeOverall.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
+      let awayOverallGoals = awayOverall.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
+
+      const totalYGoals = homeOverallGoals + awayOverallGoals;
+      const yMatchAvg = totalYGoals / 10;
+      const yMatchStatus = yMatchAvg > 2.5 ? "YES" : "NO";
+
+      let homeHAPoints = homeHA.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
+      let awayHAPoints = awayHA.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
+      
+      const haCount = homeHA.length + awayHA.length;
+      const haPointsAvg = haCount > 0 ? ((homeHAPoints + awayHAPoints) / haCount) : 0;
+
+      calculated.push({
+        league: match.league,
+        match: `${match.home_team} vs ${match.away_team}`,
+        date: match.match_date,
+        total_line: match.total_line,
+        ah_line: match.ah_line,
+        y_match: yMatchStatus,
+        y_avg: yMatchAvg.toFixed(2),
+        ha_points: haPointsAvg.toFixed(2)
+      });
     }
 
-    return new Response("Not Found", { status: 404 });
+    return new Response(JSON.stringify({ 
+      status: "success", 
+      date_range: `${dateToday} to ${dateTomorrow}`,
+      total_matches_found: calculated.length,
+      matches: calculated
+    }, null, 2), { headers: { "Content-Type": "application/json" } });
+
+  } catch (err) {
+    return new Response(JSON.stringify({ status: "error", message: err.message }, null, 2), { 
+      status: 500,
+      headers: { "Content-Type": "application/json" } 
+    });
   }
-};
+}    
