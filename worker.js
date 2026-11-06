@@ -478,17 +478,18 @@ function sumGoals(rows) {
 async function lastN(env, mode, team, beforeDate, n) {
   let sql, bind;
   if (mode === "home_team" || mode === "away_team") {
-    sql = `SELECT home_goals, away_goals FROM raw_matches
+    // ပွဲစဉ်တွေကို ရှာတဲ့အခါ လိဂ်တူတာကိုပါ ထည့်စစ်ရမယ် (ဒါမှ အသင်းနာမည်တူတွေ မရောတော့မှာ)
+    sql = `SELECT league, home_goals, away_goals FROM raw_matches
            WHERE (home_team = ? OR away_team = ?) AND match_date < ? AND home_goals IS NOT NULL
            ORDER BY match_date DESC LIMIT ?`;
     bind = [team, team, beforeDate, n];
   } else if (mode === "home_team_home") {
-    sql = `SELECT home_goals, away_goals FROM raw_matches
+    sql = `SELECT league, home_goals, away_goals FROM raw_matches
            WHERE home_team = ? AND match_date < ? AND home_goals IS NOT NULL
            ORDER BY match_date DESC LIMIT ?`;
     bind = [team, beforeDate, n];
   } else if (mode === "away_team_away") {
-    sql = `SELECT home_goals, away_goals FROM raw_matches
+    sql = `SELECT league, home_goals, away_goals FROM raw_matches
            WHERE away_team = ? AND match_date < ? AND home_goals IS NOT NULL
            ORDER BY match_date DESC LIMIT ?`;
     bind = [team, beforeDate, n];
