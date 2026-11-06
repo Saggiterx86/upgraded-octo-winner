@@ -108,7 +108,94 @@ if (url.pathname === "/sync-csv") {
     return new Response("Sync Error: " + err.message, { status: 500 });
   }
 }
+// 4. Calculate Logic (Y Match & HA Points)
+if (url.pathname === "/calc-y-match") {
+  try {
+    // ပွဲစဉ်တွေကို ဆွဲမယ် (မကစားရသေးတဲ့ ပွဲတွေ ဒါမှမဟုတ် ရလာဒ်မရှိသေးတဲ့ ပွဲတွေ)
+    const { results: matches } = await env.DB.prepare(
+      "SELECT * FROM raw_matches WHERE home_goals IS NULL ORDER BY league, match_date LIMIT 50"
+    ).all();
 
+    let calculated = [];
+
+    for (const match of matches) {
+      // 1. အိမ်ရှင်ရဲ့ နောက်ဆုံး ၅ ပွဲ (Overall) ကို ရှာမယ်
+      const { results: homeOverall } = await env.DB.prepare(`
+        SELECT home_goals, away_goals FROM raw_matches 
+        WHERE (home_team = ? OR away_team = ?) AND match_date < ? AND home_goals IS NOT NULL
+        ORDER BY match_date DESC LIMIT 5
+      `).bind(match.home_team, match.home_team, match.match_date).all();
+
+      // 2. ဧည့်သည်ရဲ့ နောက်ဆုံး ၅ ပွဲ (Overall) ကို ရှာမယ်
+      const { results: awayOverall } = await env.DB.prepare(`
+        SELECT home_goals, away_goals FROM raw_matches 
+        WHERE (home_team = ? OR away_team = ?) AND match_date < ? AND home_goals IS NOT NULL
+        ORDER BY match_date DESC LIMIT 5
+      `).bind(match.away_team, match.away_team, match.match_date).all();
+
+      // 3. အိမ်ရှင်ရဲ့ အိမ်ကွင်း ၅ ပွဲ (Home Only) ကို ရှာမယ်
+      const { results: homeHA } = await env.DB.prepare(`
+        SELECT home_goals, away_goals FROM raw_matches 
+        WHERE home_team = ? AND match_date < ? AND home_goals IS NOT NULL
+        ORDER BY match_date DESC LIMIT 5
+      `).bind(match.home_team, match.match_date).all();
+
+      // 4. ဧည့်သည်ရဲ့ အဝေးကွင်း ၅ ပွဲ (Away Only) ကို ရှာမယ်
+      const { results: awayHA } = await env.DB.prepare(`
+        SELECT home_goals, away_goals FROM raw_matches 
+        WHERE away_team = ? AND match_date < ? AND home_goals IS NOT NULL
+        ORDER BY match_date DESC LIMIT 5
+      `).bind(match.away_team, match.match_date).all();
+
+      // တွက်ချက်မှု Function လေးတွေ
+      const calcOverall = (arr, isHome) => arr.reduce((sum, m) => sum + (isHome ? m.home_goals : m.away_goals), 0);
+      
+      // အိမ်ရှင်ရဲ့ Overall ဂိုး (အိမ်ကွင်းဖြစ်ရင် home_goals, အဝေးကွင်းဖြစ်ရင် away_goals ယူမယ်)
+      let homeOverallGoals = homeOverall.reduce((sum, m) => sum + (m.home_team === match.home_team ? m.home_goals : m.away_goals), 0);
+      let awayOverallGoals = awayOverall.reduce((sum, m) => sum + (m.home_team === match.away_team ? m.home_goals : m.away_goals), 0);
+
+      // Y Match ဂိုးပေါင်း (10 ပွဲစာ)
+      const totalYGoals = homeOverallGoals + awayOverallGoals;
+      const yMatchAvg = totalYGoals / 10;
+      const yMatchStatus = yMatchAvg > 2.5 ? "YES" : "NO";
+
+      // HA Points တွက်ချက်မှု (အိမ်ရှင် အိမ်ကွင်း + ဧည့်သည် အဝေးကွင်း)
+      let homeHAPoints = homeHA.reduce((sum, m) => sum + m.home_goals, 0);
+      let awayHAPoints = awayHA.reduce((sum, m) => sum + m.away_goals, 0);
+      
+      // တကယ်လို့ 5 ပွဲ မပြည့်သေးရင် ပျမ်းမျှ အတွက် အရေအတွက်ကို ယူမယ်
+      const haCount = homeHA.length + awayHA.length;
+      const haPointsAvg = haCount > 0 ? ((homeHAPoints + awayHAPoints) / haCount) : 0;
+
+      // D1 ထဲ သိမ်းမယ်
+      await env.DB.prepare(`
+        INSERT INTO bot_analysis (match_id, y_match_status, ha_points, rules_hit, day_theory_hit)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(match_id) DO UPDATE SET
+          y_match_status = excluded.y_match_status,
+          ha_points = excluded.ha_points,
+          created_at = CURRENT_TIMESTAMP
+      `).bind(match.id, yMatchStatus, haPointsAvg.toFixed(2), "R0", "NONE").run();
+
+      calculated.push({
+        match: `${match.home_team} vs ${match.away_team}`,
+        league: match.league,
+        y_match: yMatchStatus,
+        y_avg: yMatchAvg.toFixed(2),
+        ha_points: haPointsAvg.toFixed(2)
+      });
+    }
+
+    return new Response(JSON.stringify({ 
+      status: "success", 
+      message: `Calculated ${calculated.length} matches`,
+      data: calculated
+    }, null, 2), { headers: { "Content-Type": "application/json" } });
+
+  } catch (err) {
+    return new Response("Calc Error: " + err.message, { status: 500 });
+  }
+}
     // 4. Alert Endpoint
     if (url.pathname === "/alert" && request.method === "POST") {
       return new Response("Alert endpoint ready", { status: 200 });
