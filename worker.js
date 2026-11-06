@@ -2,43 +2,12 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // 1. စမ်းသပ်ရန် လမ်းကြောင်း (Root)
+    // 1. Root Check
     if (url.pathname === "/") {
       return new Response("Football Bot Worker is Running!", { status: 200 });
     }
 
-    // 2. D1 Database ချိတ်ဆက်မှု စမ်းသပ်ရန်
-    if (url.pathname === "/test-db") {
-      try {
-        const { results } = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
-        return new Response(JSON.stringify({
-          status: "success",
-          message: "Database connected!",
-          tables: results
-        }, null, 2), {
-          headers: { "Content-Type": "application/json" }
-        });
-      } catch (err) {
-        return new Response("Database Error: " + err.message, { status: 500 });
-      }
-    }
-
-    // 3. Telegram အတွက် Webhook လမ်းကြောင်း (နောက်မှ ပြင်မယ်)
-    if (url.pathname === "/alert" && request.method === "POST") {
-      return new Response("Alert endpoint ready", { status: 200 });
-    }
-
-    return new Response("Not Found", { status: 404 });
-  }
-};
-export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-
-    if (url.pathname === "/") {
-      return new Response("Football Bot Worker is Running!", { status: 200 });
-    }
-
+    // 2. Database Check
     if (url.pathname === "/test-db") {
       try {
         const { results } = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
@@ -50,12 +19,9 @@ export default {
       }
     }
 
-    // ==========================================
-    // အသစ်ထည့်ထားတဲ့အပိုင်း - CSV ဆွဲပြီး D1 ထဲသိမ်းမယ်
-    // ==========================================
+    // 3. CSV Sync
     if (url.pathname === "/sync-csv") {
       try {
-        // ဥပမာ - E0 (Premier League) ကို ဆွဲမယ်
         const leagueCode = url.searchParams.get("league") || "E0"; 
         const csvUrl = `https://www.football-data.co.uk/mmz4281/2627/${leagueCode}.csv`;
         
@@ -65,10 +31,7 @@ export default {
         const csvText = await response.text();
         const lines = csvText.trim().split("\n");
         
-        // Header ကော်လံတွေကို ရှာမယ်
         const headers = lines[0].split(",").map(h => h.trim());
-        
-        // ကျွန်တော်တို့ လိုအပ်တဲ့ ကော်လံ Index တွေကို ရှာမယ်
         const getIndex = (name) => headers.indexOf(name);
         
         const idxDate = getIndex("Date");
@@ -85,16 +48,14 @@ export default {
 
         let insertedCount = 0;
 
-        // Data တစ်ကြောင်းချင်းစီကို D1 ထဲ ထည့်မယ်
         for (let i = 1; i < lines.length; i++) {
           const row = lines[i].split(",");
-          if (row.length < headers.length) continue; // Data မပြည့်စုံရင် ကျော်မယ်
+          if (row.length < headers.length) continue;
 
           const date = row[idxDate];
           const home = row[idxHome];
           const away = row[idxAway];
           
-          // ဂိုးတွေက အလွတ်ဖြစ်နေရင် (မကစားရသေးရင်) null ထည့်မယ်
           const fthg = row[idxFTHG] ? parseInt(row[idxFTHG]) : null;
           const ftag = row[idxFTAG] ? parseInt(row[idxFTAG]) : null;
           const b365h = row[idxB365H] ? parseFloat(row[idxB365H]) : null;
@@ -102,7 +63,6 @@ export default {
           const b365ch = row[idxB365CH] ? parseFloat(row[idxB365CH]) : null;
           const b365ca = row[idxB365CA] ? parseFloat(row[idxB365CA]) : null;
 
-          // D1 ထဲ ထည့်မယ် (UNIQUE ဖြစ်နေရင် update လုပ်မယ်)
           await env.DB.prepare(`
             INSERT INTO raw_matches (league, match_date, home_team, away_team, home_goals, away_goals, b365h, b365a, b365ch, b365ca)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -130,6 +90,11 @@ export default {
       } catch (err) {
         return new Response("Sync Error: " + err.message, { status: 500 });
       }
+    }
+
+    // 4. Alert Endpoint
+    if (url.pathname === "/alert" && request.method === "POST") {
+      return new Response("Alert endpoint ready", { status: 200 });
     }
 
     return new Response("Not Found", { status: 404 });
