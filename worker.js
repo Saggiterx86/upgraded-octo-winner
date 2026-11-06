@@ -104,6 +104,64 @@ if (url.pathname === "/test-db") {
       }
     }
 
+    // 6. Sync Fixtures (အနာဂတ်ပွဲစဉ်များ)
+if (url.pathname === "/sync-fixtures") {
+  try {
+    const fixturesUrl = "https://www.football-data.co.uk/fixtures.csv";
+    const response = await fetch(fixturesUrl);
+    if (!response.ok) throw new Error("Fixtures CSV ဆွဲလို့မရပါ");
+
+    const csvText = await response.text();
+    const lines = csvText.trim().split("\n");
+    const headers = lines[0].split(",").map(h => h.trim());
+    
+    const getIndex = (name) => headers.indexOf(name);
+    const idxDate = getIndex("Date");
+    const idxHome = getIndex("HomeTeam");
+    const idxAway = getIndex("AwayTeam");
+    const idxDiv = getIndex("Div"); // လိဂ်ကုဒ် (E0, E1...)
+
+    if (idxDate === -1 || idxHome === -1) throw new Error("ကော်လံမတွေ့ပါ");
+
+    // ငါတို့လိုချင်တဲ့ လိဂ်တွေပဲ ယူမယ်
+    const ourLeagues = ["E0", "E1", "D1", "F1", "SP1", "I1", "SWE", "DNK"];
+    let insertedCount = 0;
+
+    for (let i = 1; i < lines.length; i++) {
+      const row = lines[i].split(",");
+      if (row.length < headers.length) continue;
+
+      const div = row[idxDiv];
+      // ငါတို့လိဂ် မဟုတ်ရင် ကျော်မယ်
+      if (!ourLeagues.includes(div)) continue;
+
+      const date = row[idxDate];
+      const home = row[idxHome];
+      const away = row[idxAway];
+
+      // D1 ထဲ ထည့်မယ် (ရလာဒ် မရှိသေးလို့ ဂိုးတွေ null ထားမယ်)
+      await env.DB.prepare(`
+        INSERT INTO raw_matches (league, match_date, home_team, away_team)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(league, match_date, home_team, away_team) DO NOTHING
+      `).bind(div, date, home, away).run();
+
+      insertedCount++;
+    }
+
+    return new Response(JSON.stringify({ 
+      status: "success", 
+      message: `Fixtures synced: ${insertedCount} rows added.` 
+    }, null, 2), { headers: { "Content-Type": "application/json" } });
+
+  } catch (err) {
+    return new Response(JSON.stringify({ status: "error", message: err.message }, null, 2), { 
+      status: 500,
+      headers: { "Content-Type": "application/json" } 
+    });
+  }
+}
+
     // 4. Calculate Y Match & HA Points
     if (url.pathname === "/calc-y-match") {
       try {
