@@ -183,14 +183,13 @@ if (url.pathname === "/test-db") {
         });
       }
     }
-    // 5. Sync InferSports Odds (Fuzzy Match)
+    // 5. Sync InferSports Odds (Fuzzy Match without Date)
 if (url.pathname === "/sync-odds") {
   try {
     if (!env.INFER_API_KEY) {
       throw new Error("INFER_API_KEY မထည့်ရသေးပါ။");
     }
 
-    // Manual Map (CSV Name -> API Name)
     const manualMap = {
       "Man Utd": "Man United",
       "Nott'm Forest": "Nottm Forest",
@@ -200,7 +199,6 @@ if (url.pathname === "/sync-odds") {
       "Newcastle": "Newcastle United"
     };
 
-    // API ကနေ ပွဲစဉ် ၅၀ ယူမယ် (လိုအပ်ရင် တိုးနိုင်တယ်)
     const apiUrl = "https://api.infersports.dev/v1/events?sport=football&status=scheduled&limit=50";
     const apiRes = await fetch(apiUrl, {
       headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` }
@@ -217,30 +215,20 @@ if (url.pathname === "/sync-odds") {
     for (const event of events) {
       let apiHome = event.home_team?.name || "";
       let apiAway = event.away_team?.name || "";
-      const apiDate = event.scheduled_at.split("T")[0]; // YYYY-MM-DD
 
-      // Date format ကို CSV ပုံစံ (DD/MM/YYYY) ပြောင်းမယ်
-      const d = new Date(event.scheduled_at);
-      const csvDate = `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`;
-
-      // DB ထဲက CSV Data တွေကို ဆွဲမယ် (ရက်စွဲကိုက်ညီတဲ့ ပွဲတွေ)
+      // DB ထဲက CSV Data တွေကို ဆွဲမယ် (ရက်စွဲ မစစ်တော့ဘူး)
       const { results: dbMatches } = await env.DB.prepare(`
-        SELECT id, league, home_team, away_team FROM raw_matches 
-        WHERE match_date = ?
-      `).bind(csvDate).all();
+        SELECT id, league, home_team, away_team FROM raw_matches
+        WHERE home_team LIKE ? AND away_team LIKE ?
+      `).bind(`%${apiHome.split(' ')[0]}%`, `%${apiAway.split(' ')[0]}%`).all();
 
-      let foundMatchId = null;
-      let foundLeague = null;
-      let foundHome = null;
-      let foundAway = null;
+      let foundMatch = null;
 
       for (const dbMatch of dbMatches) {
-        // Manual Map နဲ့ အရင်ပြောင်းမယ်
         let mappedApiHome = manualMap[apiHome] || apiHome;
         let mappedApiAway = manualMap[apiAway] || apiAway;
 
-        // Fuzzy Match (စာလုံးအစ လောက် ကိုက်ညီရင် ယူမယ်)
-        // JS မှာ ရိုးရိုး includes() ကို သုံးပြီး စစ်မယ်
+        // စာလုံးအစ လောက် ကိုက်ညီရင် ယူမယ်
         const isHomeMatch = mappedApiHome.toLowerCase().includes(dbMatch.home_team.toLowerCase()) || 
                             dbMatch.home_team.toLowerCase().includes(mappedApiHome.toLowerCase());
         
@@ -248,16 +236,13 @@ if (url.pathname === "/sync-odds") {
                             dbMatch.away_team.toLowerCase().includes(mappedApiAway.toLowerCase());
 
         if (isHomeMatch && isAwayMatch) {
-          foundMatchId = dbMatch.id;
-          foundLeague = dbMatch.league;
-          foundHome = dbMatch.home_team;
-          foundAway = dbMatch.away_team;
-          break; // တွေ့ပြီဆိုရင် ရပ်မယ်
+          foundMatch = dbMatch;
+          break;
         }
       }
 
       // ကိုက်ညီတဲ့ ပွဲတွေ့ရင် Odds ကို ခေါ်ပြီး Update လုပ်မယ်
-      if (foundMatchId) {
+      if (foundMatch) {
         const oddsUrl = `https://api.infersports.dev/v1/events/${event.id}/odds?markets=totals,asian_handicap`;
         const oddsRes = await fetch(oddsUrl, {
           headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` }
@@ -282,14 +267,17 @@ if (url.pathname === "/sync-odds") {
           }
         }
 
+        // D1 ထဲကို Update လုပ်မယ်
         await env.DB.prepare(`
           UPDATE raw_matches SET total_line = ?, ah_line = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-        `).bind(totalLine, ahLine, foundMatchId).run();
+        `).bind(totalLine, ahLine, foundMatch.id).run();
 
         matchedCount++;
         matchedList.push({
-          league: foundLeague,
-          match: `${foundHome} vs ${foundAway}`,
+          db_id: foundMatch.id,
+          league: foundMatch.league,
+          csv_match: `${foundMatch.home_team} vs ${foundMatch.away_team}`,
+          api_match: `${apiHome} vs ${apiAway}`,
           total_line: totalLine,
           ah_line: ahLine
         });
