@@ -249,14 +249,12 @@ for (const match of matches) {
   let haPoints = 0;
 
   // ပွဲအရေအတွက် ၁၀ ပွဲ ပြည့်မှသာ တွက်မယ် (မပြည့်ရင် 0 ပေးမယ်)
-  const totalOverallMatches = homeOverall.length + awayOverall.length;
-  const totalHAMatches = homeHA.length + awayHA.length;
-
-  if (totalOverallMatches === 10) {
-    overallPoints = (sumGoals(homeOverall) + sumGoals(awayOverall)) / 10;
+  
+  if (homeOverall.length === 5 && awayOverall.length === 5) {
+  overallPoints = (sumGoals(homeOverall) + sumGoals(awayOverall)) / 10;
   }
-  if (totalHAMatches === 10) {
-    haPoints = (sumGoals(homeHA) + sumGoals(awayHA)) / 10;
+  if (homeHA.length === 5 && awayHA.length === 5) {
+  haPoints = (sumGoals(homeHA) + sumGoals(awayHA)) / 10;
   }
 
   const yMatch = (overallPoints > 2.5 && haPoints > 2.5) ? "YES" : "NO";
