@@ -112,7 +112,8 @@ if (url.pathname === "/sync-csv") {
 if (url.pathname === "/calc-y-match") {
   try {
     // ပွဲစဉ်တွေကို ဆွဲမယ် (မကစားရသေးတဲ့ ပွဲတွေ ဒါမှမဟုတ် ရလာဒ်မရှိသေးတဲ့ ပွဲတွေ)
-    const { results: matches } = await env.DB.prepare(SELECT * FROM raw_matches WHERE home_goals IS NOT NULL ORDER BY league, match_date DESC LIMIT 5
+    const { results: matches } = await env.DB.prepare(
+   "SELECT * FROM raw_matches WHERE home_goals IS NOT NULL ORDER BY league, match_date DESC LIMIT 5
     ).all();
 
     let calculated = [];
