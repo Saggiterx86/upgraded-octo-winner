@@ -308,9 +308,14 @@ export default {
 
         let msg = "🔥 <b>Football Y-Match Scanner</b> 🔥\n\n";
         for (const m of matches) {
-          msg += `⚽ <b>${m.home_team} vs ${m.away_team}</b>\n`;
-          msg += `🏆 လိဂ်: ${m.league} | 📅 ရက်: ${m.match_date}\n`;
-          msg += `📊 Overall: 2.5+ | HA: ${m.ha_points.toFixed(2)}\n`;
+  // Overall ကို DB ကနေ ပြန်တွက်မယ်
+  const ho = await lastN(env, "home_team", m.home_team, m.match_date, 5);
+  const ao = await lastN(env, "away_team", m.away_team, m.match_date, 5);
+  const ov = (sumGoals(ho) + sumGoals(ao)) / 10;
+
+  msg += `⚽ <b>${m.home_team} vs ${m.away_team}</b>\n`;
+  msg += `🏆 လိဂ်: ${m.league} | 📅 ရက်: ${m.match_date}\n`;
+  msg += `📊 Overall: ${ov.toFixed(2)} | HA: ${m.ha_points.toFixed(2)}\n`;
           if (m.total_line) msg += `🎯 Total Line: ${m.total_line}\n`;
           if (m.ah_line) msg += `📏 AH Line: ${m.ah_line}\n`;
           msg += `\n`;
