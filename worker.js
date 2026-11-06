@@ -131,15 +131,16 @@ export default {
             ORDER BY match_date DESC LIMIT 5
           `).bind(match.away_team, match.match_date).all();
 
-          let homeOverallGoals = homeOverall.reduce((sum, m) => sum + (m.home_team === match.home_team ? m.home_goals : m.away_goals), 0);
-          let awayOverallGoals = awayOverall.reduce((sum, m) => sum + (m.home_team === match.away_team ? m.home_goals : m.away_goals), 0);
+// Y Match အတွက် ရဂိုး + ပေးဂိုး (Total) ပေါင်းမယ်
+let homeOverallGoals = homeOverall.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
+let awayOverallGoals = awayOverall.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
 
-          const totalYGoals = homeOverallGoals + awayOverallGoals;
-          const yMatchAvg = totalYGoals / 10;
-          const yMatchStatus = yMatchAvg > 2.5 ? "YES" : "NO";
+const totalYGoals = homeOverallGoals + awayOverallGoals;
+const yMatchAvg = totalYGoals / 10;
 
-          let homeHAPoints = homeHA.reduce((sum, m) => sum + m.home_goals, 0);
-          let awayHAPoints = awayHA.reduce((sum, m) => sum + m.away_goals, 0);
+// HA Points အတွက်လည်း ရဂိုး + ပေးဂိုး ပေါင်းမယ် (အိမ်ကွင်းနဲ့ အဝေးကွင်း သီးသန့်)
+let homeHAPoints = homeHA.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
+let awayHAPoints = awayHA.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
           
           const haCount = homeHA.length + awayHA.length;
           const haPointsAvg = haCount > 0 ? ((homeHAPoints + awayHAPoints) / haCount) : 0;
