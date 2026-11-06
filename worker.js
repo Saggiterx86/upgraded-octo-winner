@@ -134,28 +134,13 @@ if (url.pathname === "/sync-fixtures") {
   }
 }
 
-    // 3. Sync InferSports Odds (Fuzzy Match V2)
+    // 3. Sync InferSports Odds (Debug Odds Structure)
 if (url.pathname === "/sync-odds") {
   try {
     if (!env.INFER_API_KEY) throw new Error("INFER_API_KEY မထည့်ရသေးပါ။");
 
-    const manualMap = {
-      "Man Utd": "Man United",
-      "Nott'm Forest": "Nottm Forest",
-      "Sheffield Weds": "Sheffield Wednesday",
-      "West Brom": "West Bromwich Albion",
-      "Spurs": "Tottenham",
-      "Newcastle": "Newcastle United",
-      "B.Munchen": "Bayern Munich",
-      "W.Bremen": "Werder Bremen",
-      "M'gladbach": "Borussia Monchengladbach",
-      "Ein Frankfurt": "Eintracht Frankfurt",
-      "Paris SG": "Paris Saint Germain",
-      "Inter": "Inter Milan",
-      "Milan": "AC Milan"
-    };
-
-    const apiUrl = "https://api.infersports.dev/v1/events?sport=football&status=scheduled&limit=100";
+    // API ကနေ ပွဲစဉ်တွေ ယူမယ်
+    const apiUrl = "https://api.infersports.dev/v1/events?sport=football&status=scheduled&limit=5";
     const apiRes = await fetch(apiUrl, {
       headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` }
     });
@@ -165,107 +150,26 @@ if (url.pathname === "/sync-odds") {
     const apiData = await apiRes.json();
     const events = apiData.data || apiData.events || [];
     
-    let matchedCount = 0;
-    let matchedList = [];
+    if (events.length === 0) {
+      return new Response(JSON.stringify({ status: "error", message: "No events found." }), { headers: { "Content-Type": "application/json" } });
+    }
 
-    for (const event of events) {
-      let apiHome = event.home_team?.name || "";
-      let apiAway = event.away_team?.name || "";
+    // ပထမဆုံး ပွဲစဉ်ရဲ့ Odds ကို ခေါ်ပြီး Response ကို အကုန်ပြမယ်
+    const firstEvent = events[0];
+    const oddsUrl = `https://api.infersports.dev/v1/events/${firstEvent.id}/odds?markets=totals,asian_handicap`;
+    const oddsRes = await fetch(oddsUrl, {
+      headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` }
+    });
 
-      // Manual Map နဲ့ အရင်ပြောင်းမယ်
-      let mappedApiHome = manualMap[apiHome] || apiHome;
-      let mappedApiAway = manualMap[apiAway] || apiAway;
-
-      // Database ထဲမှာ ရှာမယ် (အသင်းနာမည် အပြည့်အစုံကို သုံးပြီး ရှာမယ်)
-      // LIKE % ကို သုံးပြီး တစ်စိတ်တစ်ပိုင်း ကိုက်ညီရင်လည်း ယူမယ်
-      const { results: dbMatches } = await env.DB.prepare(`
-        SELECT id, league, home_team, away_team FROM raw_matches
-        WHERE home_team LIKE ? AND away_team LIKE ?
-      `).bind(`%${mappedApiHome}%`, `%${mappedApiAway}%`).all();
-
-      let foundMatch = null;
-
-      for (const dbMatch of dbMatches) {
-        // စာလုံးအသေးအကြီး မခွဲခြားဘဲ တိုက်စစ်မယ်
-        const dbHome = dbMatch.home_team.toLowerCase();
-        const dbAway = dbMatch.away_team.toLowerCase();
-        const apiH = mappedApiHome.toLowerCase();
-        const apiA = mappedApiAway.toLowerCase();
-
-        // Fuzzy Match Logic (တစ်ခုနဲ့တစ်ခု ပါဝင်မှုရှိမရှိ)
-        const isHomeMatch = apiH.includes(dbHome) || dbHome.includes(apiH);
-        const isAwayMatch = apiA.includes(dbAway) || dbAway.includes(apiA);
-
-        if (isHomeMatch && isAwayMatch) {
-          foundMatch = dbMatch;
-          break;
-        }
-      }
-
-      // တကယ်လို့ တိုက်ရိုက် မကိုက်ညီဘူးဆိုရင် နောက်တစ်နည်း စမ်းမယ် (စာလုံးတွေ ကွဲနေရင်)
-      if (!foundMatch) {
-        const { results: looseMatches } = await env.DB.prepare(`
-          SELECT id, league, home_team, away_team FROM raw_matches
-          WHERE home_team LIKE ? OR away_team LIKE ?
-        `).bind(`%${mappedApiHome.split(' ')[0]}%`, `%${mappedApiAway.split(' ')[0]}%`).all();
-
-        for (const dbMatch of looseMatches) {
-          const dbHome = dbMatch.home_team.toLowerCase();
-          const dbAway = dbMatch.away_team.toLowerCase();
-          
-          // ပထမဆုံးစာလုံး တူရင် ယူမယ် (ဥပမာ - Al Fateh နဲ့ Al Hazem)
-          if (dbHome.includes(mappedApiHome.split(' ')[0].toLowerCase()) && 
-              dbAway.includes(mappedApiAway.split(' ')[0].toLowerCase())) {
-             foundMatch = dbMatch;
-             break;
-          }
-        }
-      }
-
-      if (foundMatch) {
-        const oddsUrl = `https://api.infersports.dev/v1/events/${event.id}/odds?markets=totals,asian_handicap`;
-        const oddsRes = await fetch(oddsUrl, {
-          headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` }
-        });
-
-        let totalLine = null;
-        let ahLine = null;
-
-        if (oddsRes.ok) {
-          const oddsData = await oddsRes.json();
-          const markets = oddsData.markets || [];
-          const totals = markets.find(m => m.name === "totals");
-          const ah = markets.find(m => m.name === "asian_handicap");
-          
-          if (totals && totals.outcomes) {
-            const over = totals.outcomes.find(o => o.name === "Over" || o.type === "over");
-            if (over) totalLine = parseFloat(over.line || over.handicap);
-          }
-          if (ah && ah.outcomes) {
-            const homeAh = ah.outcomes.find(o => o.name === "Home" || o.type === "home");
-            if (homeAh) ahLine = parseFloat(homeAh.line || homeAh.handicap);
-          }
-        }
-
-        await env.DB.prepare(`
-          UPDATE raw_matches SET total_line = ?, ah_line = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-        `).bind(totalLine, ahLine, foundMatch.id).run();
-
-        matchedCount++;
-        matchedList.push({
-          league: foundMatch.league,
-          csv_match: `${foundMatch.home_team} vs ${foundMatch.away_team}`,
-          api_match: `${apiHome} vs ${apiAway}`,
-          total_line: totalLine,
-          ah_line: ahLine
-        });
-      }
+    let oddsData = null;
+    if (oddsRes.ok) {
+      oddsData = await oddsRes.json();
     }
 
     return new Response(JSON.stringify({ 
       status: "success", 
-      message: `Matched ${matchedCount} events.`,
-      matched_data: matchedList
+      event: `${firstEvent.home_team?.name} vs ${firstEvent.away_team?.name}`,
+      raw_odds_response: oddsData // API က Odds ကို ဘယ်လို ပြန်ပေးလဲ ကြည့်ဖို့
     }, null, 2), { headers: { "Content-Type": "application/json" } });
 
   } catch (err) {
