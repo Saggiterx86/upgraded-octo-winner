@@ -285,6 +285,67 @@ export default {
     }
 
     // ==========================================
+    // NEW: SEND TELEGRAM
+    // ==========================================
+    if (url.pathname === "/send-telegram") {
+      try {
+        const token = "8925005543:AAHTLmna7_yU7L3sFPWaEei7-FpCyny-E0s";
+        const chatId = "1821028384";
+
+        const { results: matches } = await env.DB.prepare(`
+          SELECT b.match_id, r.league, r.match_date, r.home_team, r.away_team,
+                 r.total_line, r.ah_line, b.y_match_status, b.ha_points, b.rules_hit
+          FROM bot_analysis b
+          JOIN raw_matches r ON r.id = b.match_id
+          WHERE b.y_match_status = 'YES'
+          ORDER BY r.match_date, r.league
+          LIMIT 20
+        `).all();
+
+        if (matches.length === 0) {
+          return json({ status: "success", message: "YES ပွဲစဉ် မရှိပါ။" });
+        }
+
+        let msg = "🔥 <b>Football Y-Match Scanner</b> 🔥\n\n";
+        for (const m of matches) {
+          msg += `⚽ <b>${m.home_team} vs ${m.away_team}</b>\n`;
+          msg += `🏆 လိဂ်: ${m.league} | 📅 ရက်: ${m.match_date}\n`;
+          msg += `📊 Overall: 2.5+ | HA: ${m.ha_points.toFixed(2)}\n`;
+          if (m.total_line) msg += `🎯 Total Line: ${m.total_line}\n`;
+          if (m.ah_line) msg += `📏 AH Line: ${m.ah_line}\n`;
+          msg += `\n`;
+        }
+
+        const replyMarkup = {
+          inline_keyboard: [
+            [{ text: "📊 အားလုံးကြည့်ရန်", url: "https://proud-violet-6126.wayne-rooney-mdy86.workers.dev/calculate" }],
+            [{ text: "🔄 ပြန်စစ်ရန်", url: "https://proud-violet-6126.wayne-rooney-mdy86.workers.dev/daily-scan" }]
+          ]
+        };
+
+        const tgRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: msg,
+            parse_mode: "HTML",
+            reply_markup: replyMarkup
+          })
+        });
+
+        if (!tgRes.ok) {
+          const err = await tgRes.text();
+          throw new Error("Telegram Error: " + err);
+        }
+
+        return json({ status: "success", sent_matches: matches.length });
+      } catch (err) {
+        return json({ status: "error", message: err.message }, 500);
+      }
+    }
+
+    // ==========================================
     // MASTER /daily-scan
     // ==========================================
     if (url.pathname === "/daily-scan") {
@@ -416,4 +477,4 @@ async function lastN(env, mode, team, beforeDate, n) {
   }
   const { results } = await env.DB.prepare(sql).bind(...bind).all();
   return results;
-            }
+          }
