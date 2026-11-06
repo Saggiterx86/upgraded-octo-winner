@@ -180,23 +180,27 @@ export default {
         });
       }
     }
-    // 5. Sync InferSports Odds (Filter by our Leagues & Map to CSV)
+    // 5. Sync InferSports Odds (Fuzzy Match)
 if (url.pathname === "/sync-odds") {
   try {
     if (!env.INFER_API_KEY) {
       throw new Error("INFER_API_KEY မထည့်ရသေးပါ။");
     }
 
-    // ကျွန်တော်တို့ လိုချင်တဲ့ လိဂ်တွေပဲ ယူမယ်
-    const ourLeagues = ["E0", "E1", "D1", "F1", "SP1", "I1"];
-    
-    const apiUrl = "https://api.infersports.dev/v1/events?sport=football&status=scheduled&limit=50"; // ၅၀ လောက် ယူပြီး ကျွန်တော်တို့လိဂ်တွေ ပါမပါ စစ်မယ်
-    
+    // Manual Map (CSV Name -> API Name)
+    const manualMap = {
+      "Man Utd": "Man United",
+      "Nott'm Forest": "Nottm Forest",
+      "Sheffield Weds": "Sheffield Wednesday",
+      "West Brom": "West Bromwich Albion",
+      "Spurs": "Tottenham",
+      "Newcastle": "Newcastle United"
+    };
+
+    // API ကနေ ပွဲစဉ် ၅၀ ယူမယ် (လိုအပ်ရင် တိုးနိုင်တယ်)
+    const apiUrl = "https://api.infersports.dev/v1/events?sport=football&status=scheduled&limit=50";
     const apiRes = await fetch(apiUrl, {
-      headers: { 
-        "Authorization": `Bearer ${env.INFER_API_KEY}`,
-        "Content-Type": "application/json"
-      }
+      headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` }
     });
 
     if (!apiRes.ok) throw new Error(`API Error: ${apiRes.status}`);
@@ -205,87 +209,84 @@ if (url.pathname === "/sync-odds") {
     const events = apiData.data || apiData.events || [];
     
     let matchedCount = 0;
-    let checkedCount = 0;
-    let foundMatches = [];
+    let matchedList = [];
 
     for (const event of events) {
-      const apiLeague = event.league?.name || "";
-      
-      // API က လာတဲ့ လိဂ်နာမည်က ကျွန်တော်တို့ လိုချင်တဲ့ လိဂ်တွေ ဟုတ်မဟုတ် စစ်မယ်
-      // (ဒီနေရာမှာ API လိဂ်နာမည်နဲ့ ကျွန်တော်တို့ရဲ့ ကုဒ် (E0, E1) တိုက်စစ်ဖို့ လိုပါတယ်။
-      // ဥပမာ - API က "Premier League" လာရင် E0 လို့ သတ်မှတ်မယ်)
-      let mappedLeague = null;
-      if (apiLeague.includes("Premier League") && !apiLeague.includes("Saudi")) mappedLeague = "E0";
-      else if (apiLeague.includes("Championship")) mappedLeague = "E1";
-      else if (apiLeague.includes("Bundesliga")) mappedLeague = "D1";
-      else if (apiLeague.includes("Ligue 1")) mappedLeague = "F1";
-      else if (apiLeague.includes("La Liga")) mappedLeague = "SP1";
-      else if (apiLeague.includes("Serie A")) mappedLeague = "I1";
-      
-      // ကျွန်တော်တို့ လိုချင်တဲ့ လိဂ် မဟုတ်ရင် ကျော်မယ်
-      if (!mappedLeague) continue; 
-      checkedCount++;
+      let apiHome = event.home_team?.name || "";
+      let apiAway = event.away_team?.name || "";
+      const apiDate = event.scheduled_at.split("T")[0]; // YYYY-MM-DD
 
-      const eventId = event.id;
-      const oddsUrl = `https://api.infersports.dev/v1/events/${eventId}/odds?markets=totals,asian_handicap`;
-      const oddsRes = await fetch(oddsUrl, {
-        headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` }
-      });
+      // Date format ကို CSV ပုံစံ (DD/MM/YYYY) ပြောင်းမယ်
+      const d = new Date(event.scheduled_at);
+      const csvDate = `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`;
 
-      let totalLine = null;
-      let ahLine = null;
+      // DB ထဲက CSV Data တွေကို ဆွဲမယ် (ရက်စွဲကိုက်ညီတဲ့ ပွဲတွေ)
+      const { results: dbMatches } = await env.DB.prepare(`
+        SELECT id, league, home_team, away_team FROM raw_matches 
+        WHERE match_date = ?
+      `).bind(csvDate).all();
 
-      if (oddsRes.ok) {
-        const oddsData = await oddsRes.json();
-        const markets = oddsData.markets || [];
+      let foundMatchId = null;
+      let foundLeague = null;
+      let foundHome = null;
+      let foundAway = null;
+
+      for (const dbMatch of dbMatches) {
+        // Manual Map နဲ့ အရင်ပြောင်းမယ်
+        let mappedApiHome = manualMap[apiHome] || apiHome;
+        let mappedApiAway = manualMap[apiAway] || apiAway;
+
+        // Fuzzy Match (စာလုံးအစ လောက် ကိုက်ညီရင် ယူမယ်)
+        // JS မှာ ရိုးရိုး includes() ကို သုံးပြီး စစ်မယ်
+        const isHomeMatch = mappedApiHome.toLowerCase().includes(dbMatch.home_team.toLowerCase()) || 
+                            dbMatch.home_team.toLowerCase().includes(mappedApiHome.toLowerCase());
         
-        const totals = markets.find(m => m.name === "totals");
-        const ah = markets.find(m => m.name === "asian_handicap");
-        
-        if (totals && totals.outcomes) {
-          const over = totals.outcomes.find(o => o.name === "Over" || o.type === "over");
-          if (over) totalLine = parseFloat(over.line || over.handicap);
-        }
-        if (ah && ah.outcomes) {
-          const homeAh = ah.outcomes.find(o => o.name === "Home" || o.type === "home");
-          if (homeAh) ahLine = parseFloat(homeAh.line || homeAh.handicap);
+        const isAwayMatch = mappedApiAway.toLowerCase().includes(dbMatch.away_team.toLowerCase()) || 
+                            dbMatch.away_team.toLowerCase().includes(mappedApiAway.toLowerCase());
+
+        if (isHomeMatch && isAwayMatch) {
+          foundMatchId = dbMatch.id;
+          foundLeague = dbMatch.league;
+          foundHome = dbMatch.home_team;
+          foundAway = dbMatch.away_team;
+          break; // တွေ့ပြီဆိုရင် ရပ်မယ်
         }
       }
 
-      // ကဲ.. အခု API က လာတဲ့ အသင်းနာမည်တွေကို CSV ထဲက နာမည်တွေနဲ့ ချိတ်ဖို့ လိုပါပြီ။
-      // ကျွန်တော်တို့က DB ထဲက raw_matches (CSV Data) ကို သွားရှာမယ်။
-      
-      const homeApiName = event.home_team?.name || "";
-      const awayApiName = event.away_team?.name || "";
-      const matchDate = event.scheduled_at.split("T")[0]; // ရက်စွဲ ယူမယ်
+      // ကိုက်ညီတဲ့ ပွဲတွေ့ရင် Odds ကို ခေါ်ပြီး Update လုပ်မယ်
+      if (foundMatchId) {
+        const oddsUrl = `https://api.infersports.dev/v1/events/${event.id}/odds?markets=totals,asian_handicap`;
+        const oddsRes = await fetch(oddsUrl, {
+          headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` }
+        });
 
-      // CSV Data ထဲမှာ ဒီအသင်းနာမည်တွေ ပါမပါ ရှာမယ် (အကြမ်းဖျင်း LIKE နဲ့ ရှာမယ်)
-      // နောက်ပိုင်း ပိုပြီး တိကျအောင် လုပ်လို့ရပါတယ်
-      const { results: existingMatch } = await env.DB.prepare(`
-        SELECT id FROM raw_matches 
-        WHERE league = ? AND match_date = ? 
-        AND (home_team LIKE ? OR away_team LIKE ? OR home_team LIKE ? OR away_team LIKE ?)
-      `).bind(
-        mappedLeague, matchDate, 
-        `%${homeApiName.split(' ')[0]}%`, `%${awayApiName.split(' ')[0]}%`,
-        `%${homeApiName.split(' ')[0]}%`, `%${awayApiName.split(' ')[0]}%`
-      ).all();
+        let totalLine = null;
+        let ahLine = null;
 
-      if (existingMatch.length > 0) {
-        const matchId = existingMatch[0].id;
-        
-        // CSV ထဲမှာ တွေ့ပြီဆိုရင် အဲဒီပွဲရဲ့ line တွေကို Update လုပ်မယ်
+        if (oddsRes.ok) {
+          const oddsData = await oddsRes.json();
+          const markets = oddsData.markets || [];
+          const totals = markets.find(m => m.name === "totals");
+          const ah = markets.find(m => m.name === "asian_handicap");
+          
+          if (totals && totals.outcomes) {
+            const over = totals.outcomes.find(o => o.name === "Over" || o.type === "over");
+            if (over) totalLine = parseFloat(over.line || over.handicap);
+          }
+          if (ah && ah.outcomes) {
+            const homeAh = ah.outcomes.find(o => o.name === "Home" || o.type === "home");
+            if (homeAh) ahLine = parseFloat(homeAh.line || homeAh.handicap);
+          }
+        }
+
         await env.DB.prepare(`
-          UPDATE raw_matches 
-          SET total_line = ?, ah_line = ?, updated_at = CURRENT_TIMESTAMP
-          WHERE id = ?
-        `).bind(totalLine, ahLine, matchId).run();
+          UPDATE raw_matches SET total_line = ?, ah_line = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+        `).bind(totalLine, ahLine, foundMatchId).run();
 
         matchedCount++;
-        foundMatches.push({
-          league: mappedLeague,
-          api_match: `${homeApiName} vs ${awayApiName}`,
-          db_match_id: matchId,
+        matchedList.push({
+          league: foundLeague,
+          match: `${foundHome} vs ${foundAway}`,
           total_line: totalLine,
           ah_line: ahLine
         });
@@ -294,8 +295,8 @@ if (url.pathname === "/sync-odds") {
 
     return new Response(JSON.stringify({ 
       status: "success", 
-      message: `Matched ${matchedCount} out of ${checkedCount} events from our leagues.`,
-      matched_data: foundMatches
+      message: `Successfully matched and updated odds for ${matchedCount} events.`,
+      matched_data: matchedList
     }, null, 2), { headers: { "Content-Type": "application/json" } });
 
   } catch (err) {
