@@ -6,18 +6,28 @@ export default {
       return new Response("Football Bot Worker is Running!", { status: 200 });
     }
 
-    // DB Check
-    if (url.pathname === "/test-db") {
+    // ==========================================
+    // 1. Database စစ်ဆေးရန်
+    // ==========================================
+    if (url.pathname === "/check-db") {
       try {
-        const { results } = await env.DB.prepare("SELECT * FROM raw_matches LIMIT 3").all();
-        return new Response(JSON.stringify({ status: "success", sample_matches: results }, null, 2), { headers: { "Content-Type": "application/json" } });
+        const { results: sampleDates } = await env.DB.prepare(`SELECT DISTINCT match_date FROM raw_matches ORDER BY match_date DESC LIMIT 10`).all();
+        const { results: nullGoals } = await env.DB.prepare(`SELECT id, league, match_date, home_team, away_team, home_goals FROM raw_matches WHERE home_goals IS NULL LIMIT 5`).all();
+        const { results: count } = await env.DB.prepare(`SELECT COUNT(*) as total FROM raw_matches`).all();
+
+        return new Response(JSON.stringify({ 
+          status: "success", 
+          total_rows: count[0].total,
+          latest_dates_in_db: sampleDates,
+          sample_upcoming_matches: nullGoals
+        }, null, 2), { headers: { "Content-Type": "application/json" } });
       } catch (err) {
-        return new Response("Database Error: " + err.message, { status: 500 });
+        return new Response(JSON.stringify({ status: "error", message: err.message }, null, 2), { status: 500, headers: { "Content-Type": "application/json" } });
       }
     }
 
     // ==========================================
-    // SYNC ALL CSV (Batch Process)
+    // 2. လိဂ်အားလုံးကို တစ်ချက်တည်း Sync လုပ်ရန်
     // ==========================================
     if (url.pathname === "/sync-all-csv") {
       try {
@@ -25,7 +35,6 @@ export default {
         let summary = [];
         let totalInserted = 0;
 
-        // တစ်ခါတည်း အကုန်မခေါ်ဘဲ ၄ လိဂ်စီ ခွဲခေါ်မယ် (API Limit မကျော်အောင်)
         for (let i = 0; i < leagues.length; i += 4) {
           const batch = leagues.slice(i, i + 4);
           
@@ -33,7 +42,7 @@ export default {
             try {
               const csvUrl = `https://www.football-data.co.uk/mmz4281/2627/${leagueCode}.csv`;
               const response = await fetch(csvUrl);
-              if (!response.ok) return; // မရှိရင် ကျော်
+              if (!response.ok) return; 
               
               const csvText = await response.text();
               const lines = csvText.trim().split("\n");
@@ -54,7 +63,6 @@ export default {
                 const row = lines[j].split(",");
                 if (row.length < headers.length) continue;
 
-                // Date ကို YYYY-MM-DD ပြောင်းမယ်
                 const rawDate = row[idxDate];
                 let formattedDate = rawDate;
                 if (rawDate && rawDate.includes("/")) {
@@ -66,8 +74,6 @@ export default {
                   }
                 }
 
-                const home = row[idxHome];
-                const away = row[idxAway];
                 const fthg = row[idxFTHG] ? parseInt(row[idxFTHG]) : null;
                 const ftag = row[idxFTAG] ? parseInt(row[idxFTAG]) : null;
 
@@ -76,21 +82,18 @@ export default {
                   VALUES (?, ?, ?, ?, ?, ?)
                   ON CONFLICT(league, match_date, home_team, away_team) 
                   DO UPDATE SET home_goals = excluded.home_goals, away_goals = excluded.away_goals, updated_at = CURRENT_TIMESTAMP
-                `).bind(leagueCode, formattedDate, home, away, fthg, ftag).run();
+                `).bind(leagueCode, formattedDate, row[idxHome], row[idxAway], fthg, ftag).run();
                 inserted++;
               }
               summary.push({ league: leagueCode, rows: inserted });
               totalInserted += inserted;
-            } catch (e) { 
-              summary.push({ league: leagueCode, error: e.message }); 
-            }
+            } catch (e) { summary.push({ league: leagueCode, error: e.message }); }
           }));
         }
 
-        // Fixtures ကိုပါ တစ်ခါတည်း ဆွဲမယ်
+        // အနာဂတ်ပွဲစဉ်များ ဆွဲယူခြင်း
         try {
-          const fixturesUrl = "https://www.football-data.co.uk/fixtures.csv";
-          const fixRes = await fetch(fixturesUrl);
+          const fixRes = await fetch("https://www.football-data.co.uk/fixtures.csv");
           if (fixRes.ok) {
             const fixText = await fixRes.text();
             const fixLines = fixText.trim().split("\n");
@@ -128,18 +131,14 @@ export default {
           }
         } catch(e) {}
 
-        return new Response(JSON.stringify({ 
-          status: "success", 
-          message: `Synced ${totalInserted} historical rows and fixtures.`,
-          details: summary
-        }, null, 2), { headers: { "Content-Type": "application/json" } });
+        return new Response(JSON.stringify({ status: "success", message: `Synced ${totalInserted} historical rows.`, details: summary }, null, 2), { headers: { "Content-Type": "application/json" } });
       } catch (err) {
         return new Response("Sync Error: " + err.message, { status: 500 });
       }
     }
 
     // ==========================================
-    // SYNC ODDS
+    // 3. Odds Sync (API)
     // ==========================================
     if (url.pathname === "/sync-odds") {
       try {
@@ -150,8 +149,7 @@ export default {
           "B.Munchen": "Bayern Munich", "W.Bremen": "Werder Bremen", "M'gladbach": "Borussia Monchengladbach",
           "Ein Frankfurt": "Eintracht Frankfurt", "Paris SG": "Paris Saint Germain", "Inter": "Inter Milan", "Milan": "AC Milan"
         };
-        const apiUrl = "https://api.infersports.dev/v1/events?sport=football&status=scheduled&limit=100";
-        const apiRes = await fetch(apiUrl, { headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` } });
+        const apiRes = await fetch("https://api.infersports.dev/v1/events?sport=football&status=scheduled&limit=100", { headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` } });
         if (!apiRes.ok) throw new Error(`API Error: ${apiRes.status}`);
         const apiData = await apiRes.json();
         const events = apiData.data || apiData.events || [];
@@ -159,14 +157,11 @@ export default {
         let matchedCount = 0;
         let matchedList = [];
         for (const event of events) {
-          let apiHome = event.home_team?.name || "";
-          let apiAway = event.away_team?.name || "";
-          let mappedApiHome = manualMap[apiHome] || apiHome;
-          let mappedApiAway = manualMap[apiAway] || apiAway;
+          let mappedApiHome = manualMap[event.home_team?.name] || event.home_team?.name || "";
+          let mappedApiAway = manualMap[event.away_team?.name] || event.away_team?.name || "";
           
           const { results: dbMatches } = await env.DB.prepare(`
-            SELECT id, league, home_team, away_team FROM raw_matches
-            WHERE home_team LIKE ? AND away_team LIKE ?
+            SELECT id, league, home_team, away_team FROM raw_matches WHERE home_team LIKE ? AND away_team LIKE ?
           `).bind(`%${mappedApiHome}%`, `%${mappedApiAway}%`).all();
           
           let foundMatch = null;
@@ -181,10 +176,8 @@ export default {
             }
           }
           if (foundMatch) {
-            const oddsUrl = `https://api.infersports.dev/v1/events/${event.id}/odds?markets=totals,asian_handicap`;
-            const oddsRes = await fetch(oddsUrl, { headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` } });
-            let totalLine = null;
-            let ahLine = null;
+            const oddsRes = await fetch(`https://api.infersports.dev/v1/events/${event.id}/odds?markets=totals,asian_handicap`, { headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` } });
+            let totalLine = null, ahLine = null;
             if (oddsRes.ok) {
               const oddsData = await oddsRes.json();
               const markets = oddsData.markets || [];
@@ -199,9 +192,7 @@ export default {
                 if (homeAh) ahLine = parseFloat(homeAh.line || homeAh.handicap);
               }
             }
-            await env.DB.prepare(`
-              UPDATE raw_matches SET total_line = ?, ah_line = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-            `).bind(totalLine, ahLine, foundMatch.id).run();
+            await env.DB.prepare(`UPDATE raw_matches SET total_line = ?, ah_line = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(totalLine, ahLine, foundMatch.id).run();
             matchedCount++;
             matchedList.push({ league: foundMatch.league, csv_match: `${foundMatch.home_team} vs ${foundMatch.away_team}`, total_line: totalLine, ah_line: ahLine });
           }
@@ -213,7 +204,7 @@ export default {
     }
 
     // ==========================================
-    // DAILY SCAN (ယနေ့ 06:30 မှ မနက်ဖြန် 06:29 အထိ)
+    // 4. Daily Scan (ယနေ့ 06:30 မှ မနက်ဖြန် 06:29 အထိ)
     // ==========================================
     if (url.pathname === "/daily-scan") {
       try {
@@ -223,12 +214,9 @@ export default {
         const mmStartOfDay = new Date(mmNow);
         mmStartOfDay.setUTCHours(0, 0, 0, 0);
         
-        // ယနေ့ 06:30 (မြန်မာအချိန်)
         const startTimeMM = new Date(mmStartOfDay.getTime() + (6.5 * 60 * 60 * 1000));
-        // မနက်ဖြန် 06:29 (မြန်မာအချိန်)
         const endTimeMM = new Date(startTimeMM.getTime() + (24 * 60 * 60 * 1000) - (60 * 1000)); 
 
-        // Database ထဲက ရက်စွဲပုံစံ (YYYY-MM-DD)
         const fmt = (d) => {
           const day = String(d.getUTCDate()).padStart(2, '0');
           const month = String(d.getUTCMonth() + 1).padStart(2, '0');
@@ -239,7 +227,6 @@ export default {
         const dateToday = fmt(startTimeMM);
         const dateTomorrow = fmt(endTimeMM);
 
-        // Database ထဲက ပွဲစဉ်တွေကို ဆွဲမယ်
         const { results: matches } = await env.DB.prepare(`
           SELECT DISTINCT id, league, match_date, home_team, away_team, total_line, ah_line
           FROM raw_matches 
@@ -250,7 +237,6 @@ export default {
         let calculated = [];
 
         for (const match of matches) {
-          // Overall Point တွက်မယ်
           const { results: homeOverall } = await env.DB.prepare(`
             SELECT home_goals, away_goals FROM raw_matches 
             WHERE (home_team = ? OR away_team = ?) AND match_date < ? AND home_goals IS NOT NULL
@@ -263,7 +249,6 @@ export default {
             ORDER BY match_date DESC LIMIT 5
           `).bind(match.away_team, match.away_team, match.match_date).all();
 
-          // HA Point တွက်မယ်
           const { results: homeHA } = await env.DB.prepare(`
             SELECT home_goals, away_goals FROM raw_matches 
             WHERE home_team = ? AND match_date < ? AND home_goals IS NOT NULL
@@ -284,7 +269,6 @@ export default {
           let awayHAPoints = awayHA.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
           const haPoints = (homeHAPoints + awayHAPoints) / 10;
 
-          // Y Match က Points နှစ်မျိုးလုံး 2.5 ထက် ကြီးမှ YES
           const yMatchStatus = (overallPoints > 2.5 && haPoints > 2.5) ? "YES" : "NO";
 
           calculated.push({
@@ -299,12 +283,7 @@ export default {
           });
         }
 
-        return new Response(JSON.stringify({ 
-          status: "success", 
-          date_range: `${dateToday} to ${dateTomorrow}`,
-          total_matches_found: calculated.length,
-          matches: calculated
-        }, null, 2), { headers: { "Content-Type": "application/json" } });
+        return new Response(JSON.stringify({ status: "success", date_range: `${dateToday} to ${dateTomorrow}`, total_matches_found: calculated.length, matches: calculated }, null, 2), { headers: { "Content-Type": "application/json" } });
       } catch (err) {
         return new Response(JSON.stringify({ status: "error", message: err.message }, null, 2), { status: 500, headers: { "Content-Type": "application/json" } });
       }
