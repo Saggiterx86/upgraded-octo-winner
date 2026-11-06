@@ -120,114 +120,52 @@ export default {
       }
     }
 
-    // 3. Sync InferSports Odds (Filter by Our Leagues)
-    if (url.pathname === "/sync-odds") {
-      try {
-        if (!env.INFER_API_KEY) throw new Error("INFER_API_KEY မထည့်ရသေးပါ။");
+    // 5. Sync InferSports Odds (Debug Match)
+if (url.pathname === "/sync-odds") {
+  try {
+    if (!env.INFER_API_KEY) throw new Error("INFER_API_KEY မထည့်ရသေးပါ။");
 
-        const manualMap = {
-          "Man Utd": "Man United",
-          "Nott'm Forest": "Nottm Forest",
-          "Sheffield Weds": "Sheffield Wednesday",
-          "West Brom": "West Bromwich Albion",
-          "Spurs": "Tottenham",
-          "Newcastle": "Newcastle United"
-        };
+    const apiUrl = "https://api.infersports.dev/v1/events?sport=football&status=scheduled&limit=10";
+    const apiRes = await fetch(apiUrl, {
+      headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` }
+    });
 
-        const apiUrl = "https://api.infersports.dev/v1/events?sport=football&status=scheduled&limit=100";
-        const apiRes = await fetch(apiUrl, {
-          headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` }
-        });
+    if (!apiRes.ok) throw new Error(`API Error: ${apiRes.status}`);
 
-        if (!apiRes.ok) throw new Error(`API Error: ${apiRes.status}`);
+    const apiData = await apiRes.json();
+    const events = apiData.data || apiData.events || [];
+    
+    let debugList = [];
 
-        const apiData = await apiRes.json();
-        const events = apiData.data || apiData.events || [];
-        
-        let matchedCount = 0;
-        let matchedList = [];
+    for (const event of events) {
+      let apiHome = event.home_team?.name || "";
+      let apiAway = event.away_team?.name || "";
 
-        for (const event of events) {
-          let apiHome = event.home_team?.name || "";
-          let apiAway = event.away_team?.name || "";
+      // Database ထဲမှာ ရှာတဲ့အခါ ငါတို့လိုချင်တဲ့ လိဂ်တွေထဲကပဲ ဖြစ်ရမယ်
+      const { results: dbMatches } = await env.DB.prepare(`
+        SELECT id, league, home_team, away_team FROM raw_matches
+        WHERE league IN ('E0', 'E1', 'E2', 'E3', 'EC', 'SP1', 'SP2', 'I1', 'I2', 'D1', 'D2', 'F1', 'F2', 'N1', 'P1', 'B1', 'G1', 'SC0', 'SWE', 'DNK')
+        AND (home_team LIKE ? OR away_team LIKE ?)
+      `).bind(`%${apiHome.split(' ')[0]}%`, `%${apiAway.split(' ')[0]}%`).all();
 
-          // Database ထဲမှာ ရှာတဲ့အခါ ငါတို့လိုချင်တဲ့ လိဂ်တွေထဲကပဲ ဖြစ်ရမယ် (ရက်စွဲ မစစ်တော့ဘူး)
-          const { results: dbMatches } = await env.DB.prepare(`
-            SELECT id, league, home_team, away_team FROM raw_matches
-            WHERE league IN ('E0', 'E1', 'E2', 'E3', 'EC', 'SP1', 'SP2', 'I1', 'I2', 'D1', 'D2', 'F1', 'F2', 'N1', 'P1', 'B1', 'G1', 'SC0', 'SWE', 'DNK')
-            AND home_team LIKE ? AND away_team LIKE ?
-          `).bind(`%${apiHome.split(' ')[0]}%`, `%${apiAway.split(' ')[0]}%`).all();
-
-          let foundMatch = null;
-
-          for (const dbMatch of dbMatches) {
-            let mappedApiHome = manualMap[apiHome] || apiHome;
-            let mappedApiAway = manualMap[apiAway] || apiAway;
-
-            const isHomeMatch = mappedApiHome.toLowerCase().includes(dbMatch.home_team.toLowerCase()) || 
-                                dbMatch.home_team.toLowerCase().includes(mappedApiHome.toLowerCase());
-            
-            const isAwayMatch = mappedApiAway.toLowerCase().includes(dbMatch.away_team.toLowerCase()) || 
-                                dbMatch.away_team.toLowerCase().includes(mappedApiAway.toLowerCase());
-
-            if (isHomeMatch && isAwayMatch) {
-              foundMatch = dbMatch;
-              break;
-            }
-          }
-
-          if (foundMatch) {
-            const oddsUrl = `https://api.infersports.dev/v1/events/${event.id}/odds?markets=totals,asian_handicap`;
-            const oddsRes = await fetch(oddsUrl, {
-              headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` }
-            });
-
-            let totalLine = null;
-            let ahLine = null;
-
-            if (oddsRes.ok) {
-              const oddsData = await oddsRes.json();
-              const markets = oddsData.markets || [];
-              const totals = markets.find(m => m.name === "totals");
-              const ah = markets.find(m => m.name === "asian_handicap");
-              
-              if (totals && totals.outcomes) {
-                const over = totals.outcomes.find(o => o.name === "Over" || o.type === "over");
-                if (over) totalLine = parseFloat(over.line || over.handicap);
-              }
-              if (ah && ah.outcomes) {
-                const homeAh = ah.outcomes.find(o => o.name === "Home" || o.type === "home");
-                if (homeAh) ahLine = parseFloat(homeAh.line || homeAh.handicap);
-              }
-            }
-
-            await env.DB.prepare(`
-              UPDATE raw_matches SET total_line = ?, ah_line = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-            `).bind(totalLine, ahLine, foundMatch.id).run();
-
-            matchedCount++;
-            matchedList.push({
-              league: foundMatch.league,
-              csv_match: `${foundMatch.home_team} vs ${foundMatch.away_team}`,
-              total_line: totalLine,
-              ah_line: ahLine
-            });
-          }
-        }
-
-        return new Response(JSON.stringify({ 
-          status: "success", 
-          message: `Matched ${matchedCount} events.`,
-          matched_data: matchedList
-        }, null, 2), { headers: { "Content-Type": "application/json" } });
-
-      } catch (err) {
-        return new Response(JSON.stringify({ status: "error", message: err.message }, null, 2), { 
-          status: 500,
-          headers: { "Content-Type": "application/json" } 
-        });
-      }
+      debugList.push({
+        api_match: `${apiHome} vs ${apiAway}`,
+        db_candidates: dbMatches.map(m => `${m.home_team} vs ${m.away_team} (${m.league})`)
+      });
     }
+
+    return new Response(JSON.stringify({ 
+      status: "success", 
+      debug_data: debugList
+    }, null, 2), { headers: { "Content-Type": "application/json" } });
+
+  } catch (err) {
+    return new Response(JSON.stringify({ status: "error", message: err.message }, null, 2), { 
+      status: 500,
+      headers: { "Content-Type": "application/json" } 
+    });
+  }
+}
 
     // 4. Calculate Logic (Y Match & HA Points)
     if (url.pathname === "/calc-y-match") {
