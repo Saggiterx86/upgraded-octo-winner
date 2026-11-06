@@ -2,10 +2,12 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
+    // 1. Root Check
     if (url.pathname === "/") {
       return new Response("Football Bot Worker is Running!", { status: 200 });
     }
 
+    // 2. Database Check
     if (url.pathname === "/test-db") {
       try {
         const { results } = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
@@ -17,6 +19,7 @@ export default {
       }
     }
 
+    // 3. CSV Sync
     if (url.pathname === "/sync-csv") {
       try {
         const leagues = ["E0", "E1", "D1", "F1", "SP1", "I1", "SWE", "DNK"];
@@ -98,6 +101,7 @@ export default {
       }
     }
 
+    // 4. Calculate Y Match & HA Points
     if (url.pathname === "/calc-y-match") {
       try {
         const { results: matches } = await env.DB.prepare(
@@ -107,40 +111,45 @@ export default {
         let calculated = [];
 
         for (const match of matches) {
+          // 1. အိမ်ရှင်ရဲ့ နောက်ဆုံး ၅ ပွဲ
           const { results: homeOverall } = await env.DB.prepare(`
             SELECT home_goals, away_goals FROM raw_matches 
             WHERE (home_team = ? OR away_team = ?) AND match_date < ? AND home_goals IS NOT NULL
             ORDER BY match_date DESC LIMIT 5
           `).bind(match.home_team, match.home_team, match.match_date).all();
 
+          // 2. ဧည့်သည်ရဲ့ နောက်ဆုံး ၅ ပွဲ
           const { results: awayOverall } = await env.DB.prepare(`
             SELECT home_goals, away_goals FROM raw_matches 
             WHERE (home_team = ? OR away_team = ?) AND match_date < ? AND home_goals IS NOT NULL
             ORDER BY match_date DESC LIMIT 5
           `).bind(match.away_team, match.away_team, match.match_date).all();
 
+          // 3. အိမ်ရှင်ရဲ့ အိမ်ကွင်း ၅ ပွဲ
           const { results: homeHA } = await env.DB.prepare(`
             SELECT home_goals, away_goals FROM raw_matches 
             WHERE home_team = ? AND match_date < ? AND home_goals IS NOT NULL
             ORDER BY match_date DESC LIMIT 5
           `).bind(match.home_team, match.match_date).all();
 
+          // 4. ဧည့်သည်ရဲ့ အဝေးကွင်း ၅ ပွဲ
           const { results: awayHA } = await env.DB.prepare(`
             SELECT home_goals, away_goals FROM raw_matches 
             WHERE away_team = ? AND match_date < ? AND home_goals IS NOT NULL
             ORDER BY match_date DESC LIMIT 5
           `).bind(match.away_team, match.match_date).all();
 
-// Y Match အတွက် ရဂိုး + ပေးဂိုး (Total) ပေါင်းမယ်
-let homeOverallGoals = homeOverall.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
-let awayOverallGoals = awayOverall.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
+          // Y Match အတွက် ရဂိုး + ပေးဂိုး ပေါင်းမယ်
+          let homeOverallGoals = homeOverall.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
+          let awayOverallGoals = awayOverall.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
 
-const totalYGoals = homeOverallGoals + awayOverallGoals;
-const yMatchAvg = totalYGoals / 10;
+          const totalYGoals = homeOverallGoals + awayOverallGoals;
+          const yMatchAvg = totalYGoals / 10;
+          const yMatchStatus = yMatchAvg > 2.5 ? "YES" : "NO";
 
-// HA Points အတွက်လည်း ရဂိုး + ပေးဂိုး ပေါင်းမယ် (အိမ်ကွင်းနဲ့ အဝေးကွင်း သီးသန့်)
-let homeHAPoints = homeHA.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
-let awayHAPoints = awayHA.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
+          // HA Points အတွက်လည်း ရဂိုး + ပေးဂိုး ပေါင်းမယ်
+          let homeHAPoints = homeHA.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
+          let awayHAPoints = awayHA.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
           
           const haCount = homeHA.length + awayHA.length;
           const haPointsAvg = haCount > 0 ? ((homeHAPoints + awayHAPoints) / haCount) : 0;
@@ -155,18 +164,24 @@ let awayHAPoints = awayHA.reduce((sum, m) => sum + m.home_goals + m.away_goals, 
           });
         }
 
-        return new Response(JSON.stringify({ status: "success", message: `Calculated ${calculated.length} matches`, data: calculated }, null, 2), { 
-          headers: { "Content-Type": "application/json" } 
-        });
+        return new Response(JSON.stringify({ 
+          status: "success", 
+          message: `Calculated ${calculated.length} matches`,
+          data: calculated
+        }, null, 2), { headers: { "Content-Type": "application/json" } });
 
       } catch (err) {
-        return new Response(JSON.stringify({ status: "error", message: err.message }, null, 2), { 
+        return new Response(JSON.stringify({ 
+          status: "error", 
+          message: err.message 
+        }, null, 2), { 
           status: 500,
           headers: { "Content-Type": "application/json" } 
         });
       }
     }
 
+    // 5. Alert Endpoint
     if (url.pathname === "/alert" && request.method === "POST") {
       return new Response("Alert endpoint ready", { status: 200 });
     }
