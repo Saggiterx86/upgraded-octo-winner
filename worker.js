@@ -6,6 +6,7 @@ export default {
       return new Response("Football Bot Worker is Running!", { status: 200 });
     }
 
+    // DB Check
     if (url.pathname === "/test-db") {
       try {
         const { results } = await env.DB.prepare("SELECT * FROM raw_matches LIMIT 3").all();
@@ -15,79 +16,131 @@ export default {
       }
     }
 
-    if (url.pathname === "/sync-csv") {
+    // ==========================================
+    // SYNC ALL CSV (Batch Process)
+    // ==========================================
+    if (url.pathname === "/sync-all-csv") {
       try {
-        const leagueCode = url.searchParams.get("league") || "E0";
-        let csvUrl = ["SWE", "DNK"].includes(leagueCode) 
-          ? `https://www.football-data.co.uk/new/${leagueCode}.csv`
-          : `https://www.football-data.co.uk/mmz4281/2627/${leagueCode}.csv`;
-        const response = await fetch(csvUrl);
-        if (!response.ok) return new Response(`League ${leagueCode} CSV not found.`, { status: 404 });
-        const csvText = await response.text();
-        const lines = csvText.trim().split("\n");
-        const headers = lines[0].split(",").map(h => h.trim());
-        const getIndex = (name) => headers.indexOf(name);
-        const idxDate = getIndex("Date");
-        const idxHome = getIndex("HomeTeam");
-        const idxAway = getIndex("AwayTeam");
-        const idxFTHG = getIndex("FTHG");
-        const idxFTAG = getIndex("FTAG");
-        if (idxDate === -1 || idxHome === -1) return new Response(`Invalid CSV`, { status: 400 });
-        let insertedCount = 0;
-        for (let i = 1; i < lines.length; i++) {
-          const row = lines[i].split(",");
-          if (row.length < headers.length) continue;
-          const date = row[idxDate];
-          const home = row[idxHome];
-          const away = row[idxAway];
-          const fthg = row[idxFTHG] ? parseInt(row[idxFTHG]) : null;
-          const ftag = row[idxFTAG] ? parseInt(row[idxFTAG]) : null;
-          await env.DB.prepare(`
-            INSERT INTO raw_matches (league, match_date, home_team, away_team, home_goals, away_goals)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(league, match_date, home_team, away_team) 
-            DO UPDATE SET home_goals = excluded.home_goals, away_goals = excluded.away_goals, updated_at = CURRENT_TIMESTAMP
-          `).bind(leagueCode, date, home, away, fthg, ftag).run();
-          insertedCount++;
+        const leagues = ['E0', 'E1', 'E2', 'E3', 'EC', 'SP1', 'SP2', 'I1', 'I2', 'D1', 'D2', 'F1', 'F2', 'N1', 'P1', 'B1', 'G1', 'SC0'];
+        let summary = [];
+        let totalInserted = 0;
+
+        // တစ်ခါတည်း အကုန်မခေါ်ဘဲ ၄ လိဂ်စီ ခွဲခေါ်မယ် (API Limit မကျော်အောင်)
+        for (let i = 0; i < leagues.length; i += 4) {
+          const batch = leagues.slice(i, i + 4);
+          
+          await Promise.all(batch.map(async (leagueCode) => {
+            try {
+              const csvUrl = `https://www.football-data.co.uk/mmz4281/2627/${leagueCode}.csv`;
+              const response = await fetch(csvUrl);
+              if (!response.ok) return; // မရှိရင် ကျော်
+              
+              const csvText = await response.text();
+              const lines = csvText.trim().split("\n");
+              if (lines.length < 2) return;
+
+              const headers = lines[0].split(",").map(h => h.trim());
+              const getIndex = (name) => headers.indexOf(name);
+              
+              const idxDate = getIndex("Date");
+              const idxHome = getIndex("HomeTeam");
+              const idxAway = getIndex("AwayTeam");
+              const idxFTHG = getIndex("FTHG");
+              const idxFTAG = getIndex("FTAG");
+              if (idxDate === -1 || idxHome === -1) return;
+
+              let inserted = 0;
+              for (let j = 1; j < lines.length; j++) {
+                const row = lines[j].split(",");
+                if (row.length < headers.length) continue;
+
+                // Date ကို YYYY-MM-DD ပြောင်းမယ်
+                const rawDate = row[idxDate];
+                let formattedDate = rawDate;
+                if (rawDate && rawDate.includes("/")) {
+                  const parts = rawDate.split("/");
+                  if (parts.length === 3) {
+                    let year = parts[2];
+                    if (year.length === 2) year = "20" + year;
+                    formattedDate = `${year}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+                  }
+                }
+
+                const home = row[idxHome];
+                const away = row[idxAway];
+                const fthg = row[idxFTHG] ? parseInt(row[idxFTHG]) : null;
+                const ftag = row[idxFTAG] ? parseInt(row[idxFTAG]) : null;
+
+                await env.DB.prepare(`
+                  INSERT INTO raw_matches (league, match_date, home_team, away_team, home_goals, away_goals)
+                  VALUES (?, ?, ?, ?, ?, ?)
+                  ON CONFLICT(league, match_date, home_team, away_team) 
+                  DO UPDATE SET home_goals = excluded.home_goals, away_goals = excluded.away_goals, updated_at = CURRENT_TIMESTAMP
+                `).bind(leagueCode, formattedDate, home, away, fthg, ftag).run();
+                inserted++;
+              }
+              summary.push({ league: leagueCode, rows: inserted });
+              totalInserted += inserted;
+            } catch (e) { 
+              summary.push({ league: leagueCode, error: e.message }); 
+            }
+          }));
         }
-        return new Response(JSON.stringify({ status: "success", league: leagueCode, rows_inserted: insertedCount }, null, 2), { headers: { "Content-Type": "application/json" } });
+
+        // Fixtures ကိုပါ တစ်ခါတည်း ဆွဲမယ်
+        try {
+          const fixturesUrl = "https://www.football-data.co.uk/fixtures.csv";
+          const fixRes = await fetch(fixturesUrl);
+          if (fixRes.ok) {
+            const fixText = await fixRes.text();
+            const fixLines = fixText.trim().split("\n");
+            const fixHeaders = fixLines[0].split(",").map(h => h.trim());
+            const fIdxDate = fixHeaders.indexOf("Date");
+            const fIdxHome = fixHeaders.indexOf("HomeTeam");
+            const fIdxAway = fixHeaders.indexOf("AwayTeam");
+            const fIdxDiv = fixHeaders.indexOf("Div");
+            
+            let fixInserted = 0;
+            for (let i = 1; i < fixLines.length; i++) {
+              const row = fixLines[i].split(",");
+              if (row.length < fixHeaders.length) continue;
+              if (!leagues.includes(row[fIdxDiv])) continue;
+
+              const rawDate = row[fIdxDate];
+              let formattedDate = rawDate;
+              if (rawDate && rawDate.includes("/")) {
+                const parts = rawDate.split("/");
+                if (parts.length === 3) {
+                  let year = parts[2];
+                  if (year.length === 2) year = "20" + year;
+                  formattedDate = `${year}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+                }
+              }
+
+              await env.DB.prepare(`
+                INSERT INTO raw_matches (league, match_date, home_team, away_team)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(league, match_date, home_team, away_team) DO NOTHING
+              `).bind(row[fIdxDiv], formattedDate, row[fIdxHome], row[fIdxAway]).run();
+              fixInserted++;
+            }
+            summary.push({ league: "FIXTURES", rows: fixInserted });
+          }
+        } catch(e) {}
+
+        return new Response(JSON.stringify({ 
+          status: "success", 
+          message: `Synced ${totalInserted} historical rows and fixtures.`,
+          details: summary
+        }, null, 2), { headers: { "Content-Type": "application/json" } });
       } catch (err) {
         return new Response("Sync Error: " + err.message, { status: 500 });
       }
     }
 
-    if (url.pathname === "/sync-fixtures") {
-      try {
-        const fixturesUrl = "https://www.football-data.co.uk/fixtures.csv";
-        const response = await fetch(fixturesUrl);
-        if (!response.ok) throw new Error("Fixtures CSV ဆွဲလို့မရပါ");
-        const csvText = await response.text();
-        const lines = csvText.trim().split("\n");
-        const headers = lines[0].split(",").map(h => h.trim());
-        const idxDate = headers.indexOf("Date");
-        const idxHome = headers.indexOf("HomeTeam");
-        const idxAway = headers.indexOf("AwayTeam");
-        const idxDiv = headers.indexOf("Div");
-        const ourLeagues = ['E0', 'E1', 'E2', 'E3', 'EC', 'SP1', 'SP2', 'I1', 'I2', 'D1', 'D2', 'F1', 'F2', 'N1', 'P1', 'B1', 'G1', 'SC0', 'SWE', 'DNK'];
-        let insertedCount = 0;
-        for (let i = 1; i < lines.length; i++) {
-          const row = lines[i].split(",");
-          if (row.length < headers.length) continue;
-          const div = row[idxDiv];
-          if (!ourLeagues.includes(div)) continue;
-          await env.DB.prepare(`
-            INSERT INTO raw_matches (league, match_date, home_team, away_team)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(league, match_date, home_team, away_team) DO NOTHING
-          `).bind(div, row[idxDate], row[idxHome], row[idxAway]).run();
-          insertedCount++;
-        }
-        return new Response(JSON.stringify({ status: "success", message: `Fixtures synced: ${insertedCount} rows added.` }, null, 2), { headers: { "Content-Type": "application/json" } });
-      } catch (err) {
-        return new Response("Sync Error: " + err.message, { status: 500 });
-      }
-    }
-
+    // ==========================================
+    // SYNC ODDS
+    // ==========================================
     if (url.pathname === "/sync-odds") {
       try {
         if (!env.INFER_API_KEY) throw new Error("INFER_API_KEY မထည့်ရသေးပါ။");
@@ -102,6 +155,7 @@ export default {
         if (!apiRes.ok) throw new Error(`API Error: ${apiRes.status}`);
         const apiData = await apiRes.json();
         const events = apiData.data || apiData.events || [];
+        
         let matchedCount = 0;
         let matchedList = [];
         for (const event of events) {
@@ -109,10 +163,12 @@ export default {
           let apiAway = event.away_team?.name || "";
           let mappedApiHome = manualMap[apiHome] || apiHome;
           let mappedApiAway = manualMap[apiAway] || apiAway;
+          
           const { results: dbMatches } = await env.DB.prepare(`
             SELECT id, league, home_team, away_team FROM raw_matches
             WHERE home_team LIKE ? AND away_team LIKE ?
           `).bind(`%${mappedApiHome}%`, `%${mappedApiAway}%`).all();
+          
           let foundMatch = null;
           for (const dbMatch of dbMatches) {
             const dbHome = dbMatch.home_team.toLowerCase();
@@ -122,18 +178,6 @@ export default {
             if ((apiH.includes(dbHome) || dbHome.includes(apiH)) && (apiA.includes(dbAway) || dbAway.includes(apiA))) {
               foundMatch = dbMatch;
               break;
-            }
-          }
-          if (!foundMatch) {
-            const { results: looseMatches } = await env.DB.prepare(`
-              SELECT id, league, home_team, away_team FROM raw_matches WHERE home_team LIKE ? OR away_team LIKE ?
-            `).bind(`%${mappedApiHome.split(' ')[0]}%`, `%${mappedApiAway.split(' ')[0]}%`).all();
-            for (const dbMatch of looseMatches) {
-              if (dbMatch.home_team.toLowerCase().includes(mappedApiHome.split(' ')[0].toLowerCase()) && 
-                  dbMatch.away_team.toLowerCase().includes(mappedApiAway.split(' ')[0].toLowerCase())) {
-                 foundMatch = dbMatch;
-                 break;
-              }
             }
           }
           if (foundMatch) {
@@ -168,6 +212,9 @@ export default {
       }
     }
 
+    // ==========================================
+    // DAILY SCAN (ယနေ့ 06:30 မှ မနက်ဖြန် 06:29 အထိ)
+    // ==========================================
     if (url.pathname === "/daily-scan") {
       try {
         const now = new Date();
@@ -175,19 +222,24 @@ export default {
         const mmNow = new Date(now.getTime() + mmOffset);
         const mmStartOfDay = new Date(mmNow);
         mmStartOfDay.setUTCHours(0, 0, 0, 0);
+        
+        // ယနေ့ 06:30 (မြန်မာအချိန်)
         const startTimeMM = new Date(mmStartOfDay.getTime() + (6.5 * 60 * 60 * 1000));
+        // မနက်ဖြန် 06:29 (မြန်မာအချိန်)
         const endTimeMM = new Date(startTimeMM.getTime() + (24 * 60 * 60 * 1000) - (60 * 1000)); 
 
+        // Database ထဲက ရက်စွဲပုံစံ (YYYY-MM-DD)
         const fmt = (d) => {
           const day = String(d.getUTCDate()).padStart(2, '0');
           const month = String(d.getUTCMonth() + 1).padStart(2, '0');
           const year = d.getUTCFullYear();
-          return `${day}/${month}/${year}`;
+          return `${year}-${month}-${day}`;
         };
 
         const dateToday = fmt(startTimeMM);
         const dateTomorrow = fmt(endTimeMM);
 
+        // Database ထဲက ပွဲစဉ်တွေကို ဆွဲမယ်
         const { results: matches } = await env.DB.prepare(`
           SELECT DISTINCT id, league, match_date, home_team, away_team, total_line, ah_line
           FROM raw_matches 
@@ -198,6 +250,7 @@ export default {
         let calculated = [];
 
         for (const match of matches) {
+          // Overall Point တွက်မယ်
           const { results: homeOverall } = await env.DB.prepare(`
             SELECT home_goals, away_goals FROM raw_matches 
             WHERE (home_team = ? OR away_team = ?) AND match_date < ? AND home_goals IS NOT NULL
@@ -210,6 +263,7 @@ export default {
             ORDER BY match_date DESC LIMIT 5
           `).bind(match.away_team, match.away_team, match.match_date).all();
 
+          // HA Point တွက်မယ်
           const { results: homeHA } = await env.DB.prepare(`
             SELECT home_goals, away_goals FROM raw_matches 
             WHERE home_team = ? AND match_date < ? AND home_goals IS NOT NULL
@@ -230,6 +284,7 @@ export default {
           let awayHAPoints = awayHA.reduce((sum, m) => sum + m.home_goals + m.away_goals, 0);
           const haPoints = (homeHAPoints + awayHAPoints) / 10;
 
+          // Y Match က Points နှစ်မျိုးလုံး 2.5 ထက် ကြီးမှ YES
           const yMatchStatus = (overallPoints > 2.5 && haPoints > 2.5) ? "YES" : "NO";
 
           calculated.push({
