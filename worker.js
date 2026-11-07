@@ -21,9 +21,7 @@ export default {
         const { results: count } = await env.DB.prepare(`SELECT COUNT(*) as total FROM raw_matches`).all();
         const { results: latest } = await env.DB.prepare(`SELECT * FROM raw_matches ORDER BY id DESC LIMIT 3`).all();
         return json({ total_rows: count[0].total, latest_data: latest });
-      } catch (err) {
-        return json({ status: "error", message: err.message }, 500);
-      }
+      } catch (err) { return json({ status: "error", message: err.message }, 500); }
     }
 
     if (url.pathname === "/debug-data") {
@@ -31,27 +29,18 @@ export default {
         const team = url.searchParams.get("team") || "Mainz";
         const beforeDate = url.searchParams.get("date") || "2026-11-07";
         const league = url.searchParams.get("league") || null;
-
         const homeOverall = await lastN(env, "home_team", team, beforeDate, 5, league);
         const homeHA = await lastN(env, "home_team_home", team, beforeDate, 5, league);
-
         const overallSum = sumGoals(homeOverall);
         const haSum = sumGoals(homeHA);
-
         return json({
           team: team, league: league, before_date: beforeDate,
-          overall_matches_found: homeOverall.length,
-          overall_matches_data: homeOverall,
-          overall_sum_goals: overallSum,
-          overall_point_calculated: overallSum / 10,
-          ha_matches_found: homeHA.length,
-          ha_matches_data: homeHA,
-          ha_sum_goals: haSum,
-          ha_point_calculated: haSum / 10
+          overall_matches_found: homeOverall.length, overall_matches_data: homeOverall,
+          overall_sum_goals: overallSum, overall_point_calculated: overallSum / 10,
+          ha_matches_found: homeHA.length, ha_matches_data: homeHA,
+          ha_sum_goals: haSum, ha_point_calculated: haSum / 10
         });
-      } catch (err) {
-        return json({ status: "error", message: err.message }, 500);
-      }
+      } catch (err) { return json({ status: "error", message: err.message }, 500); }
     }
 
     if (url.pathname === "/sync-csv") {
@@ -59,7 +48,6 @@ export default {
         const single = url.searchParams.get("league");
         const leagues = single ? [single] : ['E0','E1','E2','E3','EC','SP1','SP2','I1','I2','D1','D2','F1','F2','N1','P1','B1','G1','SC0'];
         let totalRows = 0;
-
         for (const leagueCode of leagues) {
           try {
             const csvUrl = `https://www.football-data.co.uk/mmz4281/2627/${leagueCode}.csv`;
@@ -70,8 +58,10 @@ export default {
               if (rows.length > 1) {
                 const headers = rows[0].map(h => h.trim());
                 const ix = {
-                  date: headers.indexOf("Date"), home: headers.indexOf("HomeTeam"), away: headers.indexOf("AwayTeam"),
+                  date: headers.indexOf("Date"), time: headers.indexOf("Time"),
+                  home: headers.indexOf("HomeTeam"), away: headers.indexOf("AwayTeam"),
                   fthg: headers.indexOf("FTHG"), ftag: headers.indexOf("FTAG"),
+                  hthg: headers.indexOf("HTHG"), htag: headers.indexOf("HTAG"),
                   b365h: headers.indexOf("B365H"), b365a: headers.indexOf("B365A"),
                 };
                 if (ix.date !== -1 && ix.home !== -1 && ix.away !== -1) {
@@ -84,18 +74,22 @@ export default {
                       if (!formattedDate) continue;
                       const hg = ix.fthg !== -1 && r[ix.fthg] !== "" ? parseInt(r[ix.fthg]) : null;
                       const ag = ix.ftag !== -1 && r[ix.ftag] !== "" ? parseInt(r[ix.ftag]) : null;
+                      const hthg = ix.hthg !== -1 && r[ix.hthg] !== "" ? parseInt(r[ix.hthg]) : null;
+                      const htag = ix.htag !== -1 && r[ix.htag] !== "" ? parseInt(r[ix.htag]) : null;
+                      const mTime = ix.time !== -1 && r[ix.time] ? r[ix.time] : null;
                       const bH = ix.b365h !== -1 && r[ix.b365h] ? parseFloat(r[ix.b365h]) : null;
                       const bA = ix.b365a !== -1 && r[ix.b365a] ? parseFloat(r[ix.b365a]) : null;
 
                       stmts.push(env.DB.prepare(`
-                        INSERT INTO raw_matches (league, match_date, home_team, away_team, home_goals, away_goals, b365h, b365a)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO raw_matches (league, match_date, match_time, home_team, away_team, home_goals, away_goals, ht_home_goals, ht_away_goals, b365h, b365a)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(league, match_date, home_team, away_team)
                         DO UPDATE SET home_goals = excluded.home_goals, away_goals = excluded.away_goals,
-                                      b365h = COALESCE(excluded.b365h, raw_matches.b365h),
-                                      b365a = COALESCE(excluded.b365a, raw_matches.b365a),
+                                      ht_home_goals = excluded.ht_home_goals, ht_away_goals = excluded.ht_away_goals,
+                                      match_time = COALESCE(excluded.match_time, raw_matches.match_time),
+                                      b365h = COALESCE(excluded.b365h, raw_matches.b365h), b365a = COALESCE(excluded.b365a, raw_matches.b365a),
                                       updated_at = CURRENT_TIMESTAMP
-                      `).bind(leagueCode, formattedDate, r[ix.home], r[ix.away], hg, ag, bH, bA));
+                      `).bind(leagueCode, formattedDate, mTime, r[ix.home], r[ix.away], hg, ag, hthg, htag, bH, bA));
                     }
                     if (stmts.length) { await env.DB.batch(stmts); totalRows += stmts.length; }
                   }
@@ -115,12 +109,10 @@ export default {
         const text = await res.text();
         const rows = parseCSV(text);
         if (rows.length < 2) return json({ status: "success", rows_processed: 0 });
-
         const headers = rows[0].map(h => h.trim());
-        const ix = { div: headers.indexOf("Div"), date: headers.indexOf("Date"), home: headers.indexOf("HomeTeam"), away: headers.indexOf("AwayTeam") };
+        const ix = { div: headers.indexOf("Div"), date: headers.indexOf("Date"), time: headers.indexOf("Time"), home: headers.indexOf("HomeTeam"), away: headers.indexOf("AwayTeam") };
         const leagues = ['E0','E1','E2','E3','EC','SP1','SP2','I1','I2','D1','D2','F1','F2','N1','P1','B1','G1','SC0'];
         let totalRows = 0;
-
         for (let i = 1; i < rows.length; i += 50) {
           const stmts = [];
           for (let j = i; j < Math.min(i + 50, rows.length); j++) {
@@ -130,9 +122,9 @@ export default {
             const formattedDate = formatDate(r[ix.date]);
             if (!formattedDate) continue;
             stmts.push(env.DB.prepare(`
-              INSERT INTO raw_matches (league, match_date, home_team, away_team)
-              VALUES (?, ?, ?, ?) ON CONFLICT(league, match_date, home_team, away_team) DO NOTHING
-            `).bind(r[ix.div], formattedDate, r[ix.home], r[ix.away]));
+              INSERT INTO raw_matches (league, match_date, match_time, home_team, away_team)
+              VALUES (?, ?, ?, ?, ?) ON CONFLICT(league, match_date, home_team, away_team) DO NOTHING
+            `).bind(r[ix.div], formattedDate, (ix.time !== -1 && r[ix.time]) ? r[ix.time] : null, r[ix.home], r[ix.away]));
           }
           if (stmts.length) { await env.DB.batch(stmts); totalRows += stmts.length; }
         }
@@ -174,14 +166,10 @@ export default {
 
     if (url.pathname === "/calculate") {
       try {
-        const now = new Date();
-        const mmOffsetMs = 6.5 * 60 * 60 * 1000;
-        const mmNow = new Date(now.getTime() + mmOffsetMs);
+        const now = new Date(); const mmOffsetMs = 6.5 * 60 * 60 * 1000; const mmNow = new Date(now.getTime() + mmOffsetMs);
         const mmStart = new Date(Date.UTC(mmNow.getUTCFullYear(), mmNow.getUTCMonth(), mmNow.getUTCDate()));
-        const windowStart = new Date(mmStart.getTime() + mmOffsetMs);
-        const windowEnd = new Date(windowStart.getTime() + 24 * 60 * 60 * 1000 - 60 * 1000);
-        const dateToday = toYMD(windowStart);
-        const dateTomorrow = toYMD(windowEnd);
+        const windowStart = new Date(mmStart.getTime() + mmOffsetMs); const windowEnd = new Date(windowStart.getTime() + 24 * 60 * 60 * 1000 - 60 * 1000);
+        const dateToday = toYMD(windowStart); const dateTomorrow = toYMD(windowEnd);
 
         const { results: matches } = await env.DB.prepare(`
           SELECT id, league, match_date, home_team, away_team, total_line, ah_line
@@ -202,18 +190,15 @@ export default {
           const yMatch = (overallPoints > 2.5 && haPoints > 2.5) ? "YES" : "NO";
           const rulesHit = (overallPoints > 2.5 && haPoints > 2.5) ? "BOTH" : (overallPoints > 2.5 ? "OVERALL_ONLY" : (haPoints > 2.5 ? "HA_ONLY" : "NONE"));
 
-          await env.DB.prepare(`
+         await env.DB.prepare(`
             INSERT INTO bot_analysis (match_id, y_match_status, overall_points, ha_points, rules_hit, day_theory_hit)
             VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(match_id) DO UPDATE SET
-              y_match_status = excluded.y_match_status, overall_points = excluded.overall_points,
-              ha_points = excluded.ha_points, rules_hit = excluded.rules_hit, created_at = CURRENT_TIMESTAMP
+            ON CONFLICT(match_id) DO UPDATE SET y_match_status = excluded.y_match_status, overall_points = excluded.overall_points, ha_points = excluded.ha_points, rules_hit = excluded.rules_hit, created_at = CURRENT_TIMESTAMP
           `).bind(match.id, yMatch, overallPoints, haPoints, rulesHit, null).run();
 
           calculated.push({
-            match_id: match.id, league: match.league, match: `${match.home_team} vs ${match.away_team}`,
-            date: match.match_date, y_match: yMatch, overall_point: Number(overallPoints.toFixed(2)),
-            ha_point: Number(haPoints.toFixed(2)), total_line: match.total_line, ah_line: match.ah_line,
+            match_id: match.id, league: match.league, match: `${match.home_team} vs ${match.away_team}`, date: match.match_date,
+            y_match: yMatch, overall_point: Number(overallPoints.toFixed(2)), ha_point: Number(haPoints.toFixed(2)), total_line: match.total_line, ah_line: match.ah_line,
           });
         }
         return json({ status: "success", date_range: `${dateToday} → ${dateTomorrow}`, total_matches: calculated.length, yes_matches: calculated.filter(m => m.y_match === "YES").length, matches: calculated });
@@ -226,25 +211,18 @@ export default {
         const chatId = "1821028384";
         const { results: matches } = await env.DB.prepare(`
           SELECT b.match_id, r.league, r.match_date, r.home_team, r.away_team, r.total_line, r.ah_line, b.y_match_status, b.overall_points, b.ha_points, b.rules_hit
-          FROM bot_analysis b JOIN raw_matches r ON r.id = b.match_id
-          WHERE b.y_match_status = 'YES' AND b.ha_points > 0 ORDER BY r.match_date, r.league LIMIT 20
+          FROM bot_analysis b JOIN raw_matches r ON r.id = b.match_id WHERE b.y_match_status = 'YES' AND b.ha_points > 0 ORDER BY r.match_date, r.league LIMIT 20
         `).all();
-
         if (matches.length === 0) return json({ status: "success", message: "YES ပွဲစဉ် မရှိပါ။" });
 
         let msg = "🔥 <b>Football Y-Match Scanner</b> 🔥\n\n";
         for (const m of matches) {
           msg += `⚽ <b>${m.home_team} vs ${m.away_team}</b>\n🏆 လိဂ်: ${m.league} | 📅 ရက်: ${m.match_date}\n`;
           msg += `📊 Overall: <b>${Number(m.overall_points).toFixed(2)}</b> | HA: <b>${Number(m.ha_points).toFixed(2)}</b>\n`;
-          if (m.total_line) msg += `🎯 Total Line: ${m.total_line}\n`;
-          if (m.ah_line) msg += `📏 AH Line: ${m.ah_line}\n\n`;
+          if (m.total_line) msg += `🎯 Total Line: ${m.total_line}\n`; if (m.ah_line) msg += `📏 AH Line: ${m.ah_line}\n\n`;
         }
-
         const replyMarkup = { inline_keyboard: [[{ text: "📊 အားလုံးကြည့်ရန်", url: "https://proud-violet-6126.wayne-rooney-mdy86.workers.dev/calculate" }, { text: "🔄 ပြန်စစ်ရန်", url: "https://proud-violet-6126.wayne-rooney-mdy86.workers.dev/daily-scan" }]] };
-        const tgRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML", reply_markup: replyMarkup })
-        });
+        const tgRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML", reply_markup: replyMarkup }) });
         if (!tgRes.ok) throw new Error("Telegram Error: " + await tgRes.text());
         return json({ status: "success", sent_matches: matches.length });
       } catch (err) { return json({ status: "error", message: err.message }, 500); }
@@ -252,8 +230,7 @@ export default {
 
     if (url.pathname === "/daily-scan") {
       try {
-        const base = url.origin;
-        const leagues = ['E0','E1','E2','E3','EC','SP1','SP2','I1','I2','D1','D2','F1','F2','N1','P1','B1','G1','SC0'];
+        const base = url.origin; const leagues = ['E0','E1','E2','E3','EC','SP1','SP2','I1','I2','D1','D2','F1','F2','N1','P1','B1','G1','SC0'];
         let csvResult = 0;
         for (const lg of leagues) { try { const r = await fetch(`${base}/sync-csv?league=${lg}`); const j = await r.json(); csvResult += (j.rows_processed || 0); } catch (e) {} }
         let fixResult = 0; try { const r = await fetch(`${base}/sync-fixtures`); const j = await r.json(); fixResult = j.rows_processed || 0; } catch (e) {}
@@ -263,169 +240,113 @@ export default {
         return json({ status: "success", csv_rows: csvResult, fixture_rows: fixResult, odds_matched: oddsResult.matched || 0, calculated: calcResult.total_matches || 0, yes_matches: calcResult.yes_matches || 0, telegram_sent: tgResult.sent_matches || 0 });
       } catch (err) { return json({ status: "error", message: err.message }, 500); }
     }
-// ==========================================
-// ✅ TELEGRAM WEBHOOK (Menu စနစ်အတွက်)
-// ==========================================
-if (url.pathname === "/webhook" && request.method === "POST") {
-  try {
-    const update = await request.json();
-    const token = "8925005543:AAHTLmna7_yU7L3sFPWaEei7-FpCyny-E0s";
 
-    // ၁။ /start နှိပ်ရင် Main Menu ပြမယ်
-    if (update.message && update.message.text === "/start") {
-      const chatId = update.message.chat.id;
-      await sendTelegram(token, chatId, "🤖 <b>Football Bot Menu</b>\n\nအောက်က Menu ကို ရွေးချယ်ပါ —", {
-        inline_keyboard: [
-          [{ text: "🏆 All Leagues", callback_data: "menu_all_leagues" }],
-          [{ text: "🔥 Y-League (YES)", callback_data: "menu_y_league" }],
-          [{ text: "📈 Streaks (Coming Soon)", callback_data: "menu_streaks" }]
-        ]
-      });
-      return new Response("OK", { status: 200 });
-    }
+    // ✅ Telegram Webhook (Menu စနစ်အတွက်)
+    if (url.pathname === "/webhook" && request.method === "POST") {
+      try {
+        const update = await request.json();
+        const token = "8925005543:AAHTLmna7_yU7L3sFPWaEei7-FpCyny-E0s";
 
-    // ၂။ Button တွေ နှိပ်ရင် (Callback Query)
-    if (update.callback_query) {
-      const chatId = update.callback_query.message.chat.id;
-      const messageId = update.callback_query.message.message_id;
-      const data = update.callback_query.data;
-
-      // Main Menu ပြန်ခေါ်ရန်
-      if (data === "menu_main") {
-        await editTelegram(token, chatId, messageId, "🤖 <b>Football Bot Menu</b>\n\nအောက်က Menu ကို ရွေးချယ်ပါ —", {
-          inline_keyboard: [
-            [{ text: "🏆 All Leagues", callback_data: "menu_all_leagues" }],
-            [{ text: "🔥 Y-League (YES)", callback_data: "menu_y_league" }],
-            [{ text: "📈 Streaks (Coming Soon)", callback_data: "menu_streaks" }]
-          ]
-        });
-      }
-
-      // All Leagues နှိပ်ရင် လိဂ်တွေပြမယ်
-      if (data === "menu_all_leagues") {
-        const leagues = ['E0','E1','E2','E3','EC','SP1','SP2','I1','I2','D1','D2','F1','F2','N1','P1','B1','G1','SC0'];
-        const keyboard = [];
-        // Button တွေကို ၂ ခုစီ တန်းစီမယ်
-        for (let i = 0; i < leagues.length; i += 2) {
-          const row = [{ text: leagues[i], callback_data: `league_${leagues[i]}` }];
-          if (leagues[i + 1]) row.push({ text: leagues[i + 1], callback_data: `league_${leagues[i + 1]}` });
-          keyboard.push(row);
-        }
-        keyboard.push([{ text: "⬅️ နောက်သို့", callback_data: "menu_main" }]);
-        
-        await editTelegram(token, chatId, messageId, "🏆 <b>လိဂ်တစ်ခု ရွေးချယ်ပါ —</b>", { inline_keyboard: keyboard });
-      }
-
-      // လိဂ်တစ်ခု ရွေးရင် ပွဲစဉ်တွေပြမယ်
-      if (data.startsWith("league_")) {
-        const leagueCode = data.replace("league_", "");
-        
-        // ဒီနေ့နဲ့ မနက်ဖြန်အတွက် ပွဲစဉ်တွေ ဆွဲမယ်
-        const now = new Date();
-        const mmOffsetMs = 6.5 * 60 * 60 * 1000;
-        const mmNow = new Date(now.getTime() + mmOffsetMs);
-        const mmStart = new Date(Date.UTC(mmNow.getUTCFullYear(), mmNow.getUTCMonth(), mmNow.getUTCDate()));
-        const windowStart = new Date(mmStart.getTime() + mmOffsetMs);
-        const windowEnd = new Date(windowStart.getTime() + 24 * 60 * 60 * 1000 - 60 * 1000);
-        const dateToday = toYMD(windowStart);
-        const dateTomorrow = toYMD(windowEnd);
-
-        const { results: matches } = await env.DB.prepare(`
-          SELECT r.id, r.home_team, r.away_team, b.y_match_status, b.overall_points, b.ha_points
-          FROM raw_matches r
-          LEFT JOIN bot_analysis b ON r.id = b.match_id
-          WHERE r.league = ? AND r.match_date IN (?, ?) AND r.home_goals IS NULL
-          ORDER BY r.match_date
-        `).bind(leagueCode, dateToday, dateTomorrow).all();
-
-        if (matches.length === 0) {
-          await editTelegram(token, chatId, messageId, `🏆 <b>${leagueCode}</b>\n\nဒီနေ့အတွက် ပွဲစဉ် မရှိပါ။`, {
-            inline_keyboard: [[{ text: "⬅️ နောက်သို့", callback_data: "menu_all_leagues" }]]
+        if (update.message && update.message.text === "/start") {
+          const chatId = update.message.chat.id;
+          await sendTelegram(token, chatId, "🤖 <b>Football Bot Menu</b>\n\nအောက်က Menu ကို ရွေးချယ်ပါ —", {
+            inline_keyboard: [[{ text: "🏆 All Leagues", callback_data: "menu_all_leagues" }], [{ text: "🔥 Y-League (YES)", callback_data: "menu_y_league" }], [{ text: "📈 Streaks (Coming Soon)", callback_data: "menu_streaks" }]]
           });
           return new Response("OK", { status: 200 });
         }
 
-        const keyboard = [];
-        for (const m of matches) {
-          const yIcon = m.y_match_status === "YES" ? "🔥 " : "";
-          keyboard.push([{ text: `${yIcon}${m.home_team} vs ${m.away_team}`, callback_data: `match_${m.id}` }]);
-        }
-        keyboard.push([{ text: "⬅️ နောက်သို့", callback_data: "menu_all_leagues" }]);
+        if (update.callback_query) {
+          const chatId = update.callback_query.message.chat.id;
+          const messageId = update.callback_query.message.message_id;
+          const data = update.callback_query.data;
 
-        await editTelegram(token, chatId, messageId, `🏆 <b>${leagueCode} - ပွဲစဉ်များ</b>\n\nကြည့်ချင်တဲ့ ပွဲစဉ်ကို ရွေးပါ —`, { inline_keyboard: keyboard });
-      }
-
-      // ပွဲစဉ်တစ်ခု နှိပ်ရင် Details ပြမယ်
-      if (data.startsWith("match_")) {
-        const matchId = data.replace("match_", "");
-        const { results: matchData } = await env.DB.prepare(`
-          SELECT r.home_team, r.away_team, r.match_date, r.league, r.total_line, r.ah_line, 
-                 b.overall_points, b.ha_points, b.y_match_status
-          FROM raw_matches r
-          LEFT JOIN bot_analysis b ON r.id = b.match_id
-          WHERE r.id = ?
-        `).bind(matchId).all();
-
-        if (matchData.length > 0) {
-          const m = matchData[0];
-          const overall = m.overall_points ? Number(m.overall_points).toFixed(2) : "မရှိပါ";
-          const ha = m.ha_points ? Number(m.ha_points).toFixed(2) : "မရှိပါ";
-          const yStatus = m.y_match_status === "YES" ? "🔥 YES" : "NO";
-          const totalLine = m.total_line || "မရှိပါ";
-          const ahLine = m.ah_line || "မရှိပါ";
-
-          const msg = `⚽ <b>${m.home_team} vs ${m.away_team}</b>\n\n` +
-                      `🏆 လိဂ်: ${m.league}\n` +
-                      `📅 ရက်: ${m.match_date}\n` +
-                      `📊 Overall: <b>${overall}</b>\n` +
-                      `📊 HA: <b>${ha}</b>\n` +
-                      `🎯 Total Line: ${totalLine}\n` +
-                      `📏 AH Line: ${ahLine}\n` +
-                      `🔥 Y-Match: <b>${yStatus}</b>`;
-
-          await editTelegram(token, chatId, messageId, msg, {
-            inline_keyboard: [[{ text: "⬅️ နောက်သို့", callback_data: `league_${m.league}` }]]
-          });
-        }
-      }
-
-      // Y League နှိပ်ရင် Y ဖြစ်တဲ့ပွဲတွေ ပြမယ်
-      if (data === "menu_y_league") {
-        const { results: yesMatches } = await env.DB.prepare(`
-          SELECT r.id, r.home_team, r.away_team, r.league
-          FROM bot_analysis b
-          JOIN raw_matches r ON r.id = b.match_id
-          WHERE b.y_match_status = 'YES' AND b.ha_points > 0
-          ORDER BY r.match_date LIMIT 20
-        `).all();
-
-        if (yesMatches.length === 0) {
-          await editTelegram(token, chatId, messageId, "🔥 <b>Y-Match မရှိပါ။</b>", {
-            inline_keyboard: [[{ text: "⬅️ နောက်သို့", callback_data: "menu_main" }]]
-          });
-        } else {
-          const keyboard = [];
-          for (const m of yesMatches) {
-            keyboard.push([{ text: `🔥 ${m.home_team} vs ${m.away_team}`, callback_data: `match_${m.id}` }]);
+          if (data === "menu_main") {
+            await editTelegram(token, chatId, messageId, "🤖 <b>Football Bot Menu</b>\n\nအောက်က Menu ကို ရွေးချယ်ပါ —", {
+              inline_keyboard: [[{ text: "🏆 All Leagues", callback_data: "menu_all_leagues" }], [{ text: "🔥 Y-League (YES)", callback_data: "menu_y_league" }], [{ text: "📈 Streaks (Coming Soon)", callback_data: "menu_streaks" }]]
+            });
           }
-          keyboard.push([{ text: "⬅️ နောက်သို့", callback_data: "menu_main" }]);
-          await editTelegram(token, chatId, messageId, "🔥 <b>Y-Match (YES) ပွဲစဉ်များ</b>\n\nကြည့်ချင်တဲ့ ပွဲစဉ်ကို ရွေးပါ —", { inline_keyboard: keyboard });
-        }
-      }
 
-      // Telegram ကို အတည်ပြုချက် ပြန်ပို့မယ်
-      await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ callback_query_id: update.callback_query.id })
-      });
+          if (data === "menu_all_leagues") {
+            const leagues = ['E0','E1','E2','E3','EC','SP1','SP2','I1','I2','D1','D2','F1','F2','N1','P1','B1','G1','SC0'];
+            const keyboard = [];
+            for (let i = 0; i < leagues.length; i += 2) {
+              const row = [{ text: leagues[i], callback_data: `league_${leagues[i]}` }];
+              if (leagues[i + 1]) row.push({ text: leagues[i + 1], callback_data: `league_${leagues[i + 1]}` });
+              keyboard.push(row);
+            }
+            keyboard.push([{ text: "⬅️ နောက်သို့", callback_data: "menu_main" }]);
+            await editTelegram(token, chatId, messageId, "🏆 <b>လိဂ်တစ်ခု ရွေးချယ်ပါ —</b>", { inline_keyboard: keyboard });
+          }
+
+          if (data.startsWith("league_")) {
+            const leagueCode = data.replace("league_", "");
+            const now = new Date(); const mmOffsetMs = 6.5 * 60 * 60 * 1000; const mmNow = new Date(now.getTime() + mmOffsetMs);
+            const mmStart = new Date(Date.UTC(mmNow.getUTCFullYear(), mmNow.getUTCMonth(), mmNow.getUTCDate()));
+            const windowStart = new Date(mmStart.getTime() + mmOffsetMs); const windowEnd = new Date(windowStart.getTime() + 24 * 60 * 60 * 1000 - 60 * 1000);
+            const dateToday = toYMD(windowStart); const dateTomorrow = toYMD(windowEnd);
+
+            const { results: matches } = await env.DB.prepare(`
+              SELECT r.id, r.home_team, r.away_team, b.y_match_status FROM raw_matches r
+              LEFT JOIN bot_analysis b ON r.id = b.match_id
+              WHERE r.league = ? AND r.match_date IN (?, ?) AND r.home_goals IS NULL ORDER BY r.match_date
+            `).bind(leagueCode, dateToday, dateTomorrow).all();
+
+            if (matches.length === 0) {
+              await editTelegram(token, chatId, messageId, `🏆 <b>${leagueCode}</b>\n\nဒီနေ့အတွက် ပွဲစဉ် မရှိပါ။`, { inline_keyboard: [[{ text: "⬅️ နောက်သို့", callback_data: "menu_all_leagues" }]] });
+            } else {
+              const keyboard = [];
+              for (const m of matches) { const yIcon = m.y_match_status === "YES" ? "🔥 " : ""; keyboard.push([{ text: `${yIcon}${m.home_team} vs ${m.away_team}`, callback_data: `match_${m.id}` }]); }
+              keyboard.push([{ text: "⬅️ နောက်သို့", callback_data: "menu_all_leagues" }]);
+              await editTelegram(token, chatId, messageId, `🏆 <b>${leagueCode} - ပွဲစဉ်များ</b>\n\nကြည့်ချင်တဲ့ ပွဲစဉ်ကို ရွေးပါ —`, { inline_keyboard: keyboard });
+            }
+          }
+
+          if (data.startsWith("match_")) {
+            const matchId = data.replace("match_", "");
+            const { results: matchData } = await env.DB.prepare(`
+              SELECT id, home_team, away_team, match_date, match_time, league, total_line, ah_line, b.overall_points, b.ha_points, b.y_match_status
+              FROM raw_matches r LEFT JOIN bot_analysis b ON r.id = b.match_id WHERE r.id = ?
+            `).bind(matchId).all();
+
+            if (matchData.length > 0) {
+              const m = matchData[0];
+              const hOverall = await lastN(env, "home_team", m.home_team, m.match_date, 1, m.league);
+              const aOverall = await lastN(env, "away_team", m.away_team, m.match_date, 1, m.league);
+              const hHA = await lastN(env, "home_team_home", m.home_team, m.match_date, 1, m.league);
+              const aHA = await lastN(env, "away_team_away", m.away_team, m.match_date, 1, m.league);
+
+              const formatResult = (arr) => { if (arr.length === 0) return "မရှိပါ"; const r = arr[0]; return `(HT ${r.ht_home_goals || 0}-${r.ht_away_goals || 0}) FT ${r.home_goals}-${r.away_goals}`; };
+              const overall = m.overall_points ? Number(m.overall_points).toFixed(2) : "မရှိပါ";
+              const ha = m.ha_points ? Number(m.ha_points).toFixed(2) : "မရှိပါ";
+              const yStatus = m.y_match_status === "YES" ? "🔥 YES" : "NO";
+              const totalLine = m.total_line || "မရှိပါ"; const ahLine = m.ah_line || "မရှိပါ"; const matchTime = m.match_time || "မရှိပါ";
+
+              const msg = `⚽ <b>${m.home_team} vs ${m.away_team}</b>\n\n🏆 လိဂ်: ${m.league} | 📅 ရက်: ${m.match_date}\n⏰ အချိန်: <b>${matchTime}</b>\n\n📊 Overall: <b>${overall}</b>\n↳ အိမ်ရှင်: ${formatResult(hOverall)}\n↳ ဧည့်သည်: ${formatResult(aOverall)}\n\n📊 HA: <b>${ha}</b>\n↳ အိမ်ကွင်း: ${formatResult(hHA)}\n↳ အဝေးကွင်း: ${formatResult(aHA)}\n\n🎯 Total Line: ${totalLine}\n📏 AH Line: ${ahLine}\n🔥 Y-Match: <b>${yStatus}</b>`;
+              await editTelegram(token, chatId, messageId, msg, { inline_keyboard: [[{ text: "⬅️ နောက်သို့", callback_data: `league_${m.league}` }]] });
+            }
+          }
+
+          if (data === "menu_y_league") {
+            const { results: yesMatches } = await env.DB.prepare(`
+              SELECT r.id, r.home_team, r.away_team, r.league FROM bot_analysis b JOIN raw_matches r ON r.id = b.match_id WHERE b.y_match_status = 'YES' AND b.ha_points > 0 ORDER BY r.match_date LIMIT 20
+            `).all();
+
+            if (yesMatches.length === 0) {
+              await editTelegram(token, chatId, messageId, "🔥 <b>Y-Match မရှိပါ။</b>", { inline_keyboard: [[{ text: "⬅️ နောက်သို့", callback_data: "menu_main" }]] });
+            } else {
+              const keyboard = [];
+              for (const m of yesMatches) { keyboard.push([{ text: `🔥 ${m.home_team} vs ${m.away_team}`, callback_data: `match_${m.id}` }]); }
+              keyboard.push([{ text: "⬅️ နောက်သို့", callback_data: "menu_main" }]);
+              await editTelegram(token, chatId, messageId, "🔥 <b>Y-Match (YES) ပွဲစဉ်များ</b>\n\nကြည့်ချင်တဲ့ ပွဲစဉ်ကို ရွေးပါ —", { inline_keyboard: keyboard });
+            }
+          }
+
+          await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ callback_query_id: update.callback_query.id }) });
+        }
+        return new Response("OK", { status: 200 });
+      } catch (err) { return json({ status: "error", message: err.message }, 500); }
     }
 
-    return new Response("OK", { status: 200 });
-  } catch (err) {
-    return json({ status: "error", message: err.message }, 500);
-  }
-          }
     return new Response("Not Found", { status: 404 });
   }
 };
@@ -441,127 +362,23 @@ async function lastN(env, mode, team, beforeDate, n, league = null) {
   const leagueClause = league ? " AND league = ?" : "";
   const leagueBind = league ? [league] : [];
   if (mode === "home_team" || mode === "away_team") {
-    sql = `SELECT league, home_goals, away_goals FROM raw_matches WHERE (home_team = ? OR away_team = ?) AND match_date < ? AND home_goals IS NOT NULL${leagueClause} ORDER BY match_date DESC LIMIT ?`;
+    sql = `SELECT league, home_goals, away_goals, ht_home_goals, ht_away_goals FROM raw_matches WHERE (home_team = ? OR away_team = ?) AND match_date < ? AND home_goals IS NOT NULL${leagueClause} ORDER BY match_date DESC LIMIT ?`;
     bind = [team, team, beforeDate, ...leagueBind, n];
   } else if (mode === "home_team_home") {
-    sql = `SELECT league, home_goals, away_goals FROM raw_matches WHERE home_team = ? AND match_date < ? AND home_goals IS NOT NULL${leagueClause} ORDER BY match_date DESC LIMIT ?`;
+    sql = `SELECT league, home_goals, away_goals, ht_home_goals, ht_away_goals FROM raw_matches WHERE home_team = ? AND match_date < ? AND home_goals IS NOT NULL${leagueClause} ORDER BY match_date DESC LIMIT ?`;
     bind = [team, beforeDate, ...leagueBind, n];
   } else if (mode === "away_team_away") {
-    sql = `SELECT league, home_goals, away_goals FROM raw_matches WHERE away_team = ? AND match_date < ? AND home_goals IS NOT NULL${leagueClause} ORDER BY match_date DESC LIMIT ?`;
+    sql = `SELECT league, home_goals, away_goals, ht_home_goals, ht_away_goals FROM raw_matches WHERE away_team = ? AND match_date < ? AND home_goals IS NOT NULL${leagueClause} ORDER BY match_date DESC LIMIT ?`;
     bind = [team, beforeDate, ...leagueBind, n];
   } else { return []; }
   const { results } = await env.DB.prepare(sql).bind(...bind).all();
   return results;
-  }
-// ✅ Telegram Message အသစ် ပို့ဖို့ Helper
+}
+
 async function sendTelegram(token, chatId, text, replyMarkup) {
-  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text: text, parse_mode: "HTML", reply_markup: replyMarkup })
-  });
+  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: chatId, text: text, parse_mode: "HTML", reply_markup: replyMarkup }) });
 }
 
-// ✅ Telegram Message ကို ပြင်ဖို့ (Edit) Helper
 async function editTelegram(token, chatId, messageId, text, replyMarkup) {
-  await fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, message_id: messageId, text: text, parse_mode: "HTML", reply_markup: replyMarkup })
-  });
-}
-function syncOddsToWorker() {
-  const INFER_API_KEY = "isk_nCWYx-HnRVqgipHcl6aH0FwEkpMeFcKt"; 
-  const WORKER_URL = "https://proud-violet-6126.wayne-rooney-mdy86.workers.dev";
-  
-  const targetLeagueIds = [
-    "lg_T9268DXK", "lg_NVRGJ4SZ", "lg_28PAYC53", "lg_WYMR6XBG", "lg_FH9KCTA5", // England
-    "lg_PYBWSDEA", "lg_WHR6XBGZ", // Spain
-    "lg_QXCSBRME", "lg_T99K68DX", // Italy
-    "lg_PGYWSDEA", "lg_WG8R6XBG", // Germany
-    "lg_CNSP3BPA", "lg_YS9BW2MS", // France
-    "lg_EH3F3MDQ", // Netherlands
-    "lg_FA2KCTA5", // Belgium
-    "lg_HB26EKC0"  // Portugal
-  ];
-
-  const manualMap = {
-    "Man Utd": "Man United", "Nott'm Forest": "Nottm Forest", "Sheffield Weds": "Sheffield Wednesday",
-    "West Brom": "West Bromwich Albion", "Spurs": "Tottenham", "Newcastle": "Newcastle United",
-    "B.Munchen": "Bayern Munich", "W.Bremen": "Werder Bremen", "M'gladbach": "Borussia Monchengladbach",
-    "Ein Frankfurt": "Eintracht Frankfurt", "Paris SG": "Paris Saint Germain", "Inter": "Inter Milan", "Milan": "AC Milan"
-  };
-
-  let allOddsToUpdate = []; 
-
-  for (const leagueId of targetLeagueIds) {
-    try {
-      const eventsUrl = `https://api.infersports.dev/v1/events?sport=football&status=scheduled&limit=100&league=${leagueId}`;
-      const evRes = UrlFetchApp.fetch(eventsUrl, {
-        "method": "get",
-        "headers": { "Authorization": "Bearer " + INFER_API_KEY }
-      });
-      const evJson = JSON.parse(evRes.getContentText());
-      const events = evJson.data || evJson.events || [];
-
-      for (const event of events) {
-        const rawApiHome = event.home_team?.name || "";
-        const rawApiAway = event.away_team?.name || "";
-        
-        const mappedApiHome = manualMap[rawApiHome] || rawApiHome;
-        const mappedApiAway = manualMap[rawApiAway] || rawApiAway;
-        if (!mappedApiHome || !mappedApiAway) continue;
-
-        const findUrl = `${WORKER_URL}/find-match?home=${encodeURIComponent(mappedApiHome)}&away=${encodeURIComponent(mappedApiAway)}`;
-        try {
-          const matchRes = UrlFetchApp.fetch(findUrl);
-          const matchJson = JSON.parse(matchRes.getContentText());
-          
-          if (!matchJson.match_id) continue; 
-
-          const oddsUrl = `https://api.infersports.dev/v1/events/${event.id}/odds`;
-          const oddsRes = UrlFetchApp.fetch(oddsUrl, {
-            "method": "get",
-            "headers": { "Authorization": "Bearer " + INFER_API_KEY }
-          });
-          const oddsJson = JSON.parse(oddsRes.getContentText());
-          const oddsArray = oddsJson.odds || [];
-
-          let totalLine = null;
-          let ahLine = null;
-
-          const totalOdds = oddsArray.find(o => o.market_type === "totals" && o.period === "full_time" && o.line !== null);
-          if (totalOdds) totalLine = parseFloat(totalOdds.line);
-
-          const ahOdds = oddsArray.find(o => o.market_type === "asian_handicap" && o.period === "full_time" && o.line !== null);
-          if (ahOdds) ahLine = parseFloat(ahOdds.line);
-
-          allOddsToUpdate.push({
-            match_id: matchJson.match_id,
-            total_line: totalLine,
-            ah_line: ahLine
-          });
-          
-          Utilities.sleep(200); 
-          
-        } catch (e) {
-          // Match ရှာမတွေ့ရင် ကျော်သွားမယ်
-        }
-      }
-    } catch (e) {
-      Logger.log("League Error: " + leagueId + " - " + e.message);
-    }
-  }
-
-  if (allOddsToUpdate.length > 0) {
-    const payload = { odds: allOddsToUpdate };
-    const postRes = UrlFetchApp.fetch(`${WORKER_URL}/update-odds`, {
-      "method": "post",
-      "contentType": "application/json",
-      "payload": JSON.stringify(payload)
-    });
-    Logger.log("Update Result: " + postRes.getContentText());
-  } else {
-    Logger.log("Odds အသစ် မရှိပါ။");
-  }
-}
+  await fetch(`https://api.telegram.org/bot${token}/editMessageText`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: chatId, message_id: messageId, text: text, parse_mode: "HTML", reply_markup: replyMarkup }) });
+                                  }
