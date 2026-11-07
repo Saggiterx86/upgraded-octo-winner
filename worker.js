@@ -315,7 +315,7 @@ if (url.pathname === "/calculate") {
                  r.total_line, r.ah_line, b.y_match_status, b.ha_points, b.rules_hit
           FROM bot_analysis b
           JOIN raw_matches r ON r.id = b.match_id
-          WHERE b.y_match_status = 'YES'
+          WHERE b.y_match_status = 'YES' AND b.ha_points > 0
           ORDER BY r.match_date, r.league
           LIMIT 20
         `).all();
