@@ -1,4 +1,18 @@
 export default {
+  async scheduled(event, env, ctx) {
+  const baseUrl = "https://proud-violet-6126.wayne-rooney-mdy86.workers.dev";
+  ctx.waitUntil((async () => {
+    try {
+      await fetch(`${baseUrl}/sync-csv`);
+      await fetch(`${baseUrl}/sync-fixtures`);
+      await fetch(`${baseUrl}/sync-odds`);
+      await fetch(`${baseUrl}/calculate`);
+      await fetch(`${baseUrl}/send-telegram`);
+    } catch (e) {
+      console.error("Cron Job Error:", e);
+    }
+  })());
+},
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
