@@ -196,6 +196,7 @@ export default {
 
     let totalEventsChecked = 0;
     let matchedCount = 0;
+    let oddsFetchedCount = 0;
     const isDebug = url.searchParams.get("debug") === "true";
     let debugLog = [];
 
@@ -205,7 +206,7 @@ export default {
         const apiRes = await fetch(`https://api.infersports.dev/v1/events?sport=football&status=scheduled&limit=100&league=${leagueId}`, {
           headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` }
         });
-        if (!apiRes.ok) continue; // API Error တက်ရင် နောက်လိဂ်ကို ဆက်သွားမယ်
+        if (!apiRes.ok) continue; 
         
         const apiData = await apiRes.json();
         const events = apiData.data || apiData.events || [];
@@ -213,6 +214,12 @@ export default {
 
         // ၂။ ရလာတဲ့ ပွဲစဉ်တွေကို တစ်ခုချင်း စစ်မယ်
         for (const event of events) {
+          // Cloudflare Subrequest Limit မကျော်အောင် Odds ဆွဲတာ ၁၅ ခုပြည့်ရင် ရပ်မယ်
+          if (oddsFetchedCount >= 15) {
+            if (isDebug) debugLog.push({ step: "Limit Reached", message: "Subrequest limit မကျော်အောင် Odds ဆွဲတာ ၁၅ ခုမှာ ရပ်လိုက်ပါတယ်။" });
+            break;
+          }
+
           try {
             const rawApiHome = event.home_team?.name || "";
             const rawApiAway = event.away_team?.name || "";
@@ -240,37 +247,33 @@ export default {
               }
             }
             
-            if (!foundMatch) {
-                if (isDebug && dbMatches.length > 0) {
-                    debugLog.push({
-                        step: "Partial Search Fail",
-                        searching_for: `${mappedApiHome} vs ${mappedApiAway}`,
-                        found_in_db: dbMatches.map(m => `${m.home_team} vs ${m.away_team}`)
-                    });
-                }
-                continue;
-            }
+            if (!foundMatch) continue;
 
             // ၃။ Odds ဆွဲခြင်း
+            oddsFetchedCount++; // Odds ဆွဲတဲ့ အရေအတွက် တိုးမယ်
             const oddsRes = await fetch(
-              `https://api.infersports.dev/v1/events/${event.id}/odds?markets=totals,asian_handicap`,
+              `https://api.infersports.dev/v1/events/${event.id}/odds`,
               { headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` } }
             );
             let totalLine = null, ahLine = null;
+            
             if (oddsRes.ok) {
               const oddsData = await oddsRes.json();
-              const markets = oddsData.markets || [];
-              const totals = markets.find(m => m.name === "totals");
-              const ah = markets.find(m => m.name === "asian_handicap");
-              if (totals?.outcomes) {
-                const over = totals.outcomes.find(o => o.name === "Over" || o.type === "over");
-                if (over) totalLine = parseFloat(over.line || over.handicap);
+              const oddsArray = oddsData.odds || []; 
+              
+              // Total Line ကို ရှာမယ် (Full Time ကိုပဲ ယူမယ်)
+              const totalOdds = oddsArray.find(o => o.market_type === "totals" && o.period === "full_time" && o.line !== null);
+              if (totalOdds) {
+                totalLine = parseFloat(totalOdds.line);
               }
-              if (ah?.outcomes) {
-                const homeAh = ah.outcomes.find(o => o.name === "Home" || o.type === "home");
-                if (homeAh) ahLine = parseFloat(homeAh.line || homeAh.handicap);
+
+              // AH Line ကို ရှာမယ် (Full Time ကိုပဲ ယူမယ်)
+              const ahOdds = oddsArray.find(o => o.market_type === "asian_handicap" && o.period === "full_time" && o.line !== null);
+              if (ahOdds) {
+                ahLine = parseFloat(ahOdds.line);
               }
             }
+
             await env.DB.prepare(`
               UPDATE raw_matches SET total_line = ?, ah_line = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
             `).bind(totalLine, ahLine, foundMatch.id).run();
