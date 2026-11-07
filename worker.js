@@ -263,7 +263,169 @@ export default {
         return json({ status: "success", csv_rows: csvResult, fixture_rows: fixResult, odds_matched: oddsResult.matched || 0, calculated: calcResult.total_matches || 0, yes_matches: calcResult.yes_matches || 0, telegram_sent: tgResult.sent_matches || 0 });
       } catch (err) { return json({ status: "error", message: err.message }, 500); }
     }
+// ==========================================
+// ✅ TELEGRAM WEBHOOK (Menu စနစ်အတွက်)
+// ==========================================
+if (url.pathname === "/webhook" && request.method === "POST") {
+  try {
+    const update = await request.json();
+    const token = "8925005543:AAHTLmna7_yU7L3sFPWaEei7-FpCyny-E0s";
 
+    // ၁။ /start နှိပ်ရင် Main Menu ပြမယ်
+    if (update.message && update.message.text === "/start") {
+      const chatId = update.message.chat.id;
+      await sendTelegram(token, chatId, "🤖 <b>Football Bot Menu</b>\n\nအောက်က Menu ကို ရွေးချယ်ပါ —", {
+        inline_keyboard: [
+          [{ text: "🏆 All Leagues", callback_data: "menu_all_leagues" }],
+          [{ text: "🔥 Y-League (YES)", callback_data: "menu_y_league" }],
+          [{ text: "📈 Streaks (Coming Soon)", callback_data: "menu_streaks" }]
+        ]
+      });
+      return new Response("OK", { status: 200 });
+    }
+
+    // ၂။ Button တွေ နှိပ်ရင် (Callback Query)
+    if (update.callback_query) {
+      const chatId = update.callback_query.message.chat.id;
+      const messageId = update.callback_query.message.message_id;
+      const data = update.callback_query.data;
+
+      // Main Menu ပြန်ခေါ်ရန်
+      if (data === "menu_main") {
+        await editTelegram(token, chatId, messageId, "🤖 <b>Football Bot Menu</b>\n\nအောက်က Menu ကို ရွေးချယ်ပါ —", {
+          inline_keyboard: [
+            [{ text: "🏆 All Leagues", callback_data: "menu_all_leagues" }],
+            [{ text: "🔥 Y-League (YES)", callback_data: "menu_y_league" }],
+            [{ text: "📈 Streaks (Coming Soon)", callback_data: "menu_streaks" }]
+          ]
+        });
+      }
+
+      // All Leagues နှိပ်ရင် လိဂ်တွေပြမယ်
+      if (data === "menu_all_leagues") {
+        const leagues = ['E0','E1','E2','E3','EC','SP1','SP2','I1','I2','D1','D2','F1','F2','N1','P1','B1','G1','SC0'];
+        const keyboard = [];
+        // Button တွေကို ၂ ခုစီ တန်းစီမယ်
+        for (let i = 0; i < leagues.length; i += 2) {
+          const row = [{ text: leagues[i], callback_data: `league_${leagues[i]}` }];
+          if (leagues[i + 1]) row.push({ text: leagues[i + 1], callback_data: `league_${leagues[i + 1]}` });
+          keyboard.push(row);
+        }
+        keyboard.push([{ text: "⬅️ နောက်သို့", callback_data: "menu_main" }]);
+        
+        await editTelegram(token, chatId, messageId, "🏆 <b>လိဂ်တစ်ခု ရွေးချယ်ပါ —</b>", { inline_keyboard: keyboard });
+      }
+
+      // လိဂ်တစ်ခု ရွေးရင် ပွဲစဉ်တွေပြမယ်
+      if (data.startsWith("league_")) {
+        const leagueCode = data.replace("league_", "");
+        
+        // ဒီနေ့နဲ့ မနက်ဖြန်အတွက် ပွဲစဉ်တွေ ဆွဲမယ်
+        const now = new Date();
+        const mmOffsetMs = 6.5 * 60 * 60 * 1000;
+        const mmNow = new Date(now.getTime() + mmOffsetMs);
+        const mmStart = new Date(Date.UTC(mmNow.getUTCFullYear(), mmNow.getUTCMonth(), mmNow.getUTCDate()));
+        const windowStart = new Date(mmStart.getTime() + mmOffsetMs);
+        const windowEnd = new Date(windowStart.getTime() + 24 * 60 * 60 * 1000 - 60 * 1000);
+        const dateToday = toYMD(windowStart);
+        const dateTomorrow = toYMD(windowEnd);
+
+        const { results: matches } = await env.DB.prepare(`
+          SELECT r.id, r.home_team, r.away_team, b.y_match_status, b.overall_points, b.ha_points
+          FROM raw_matches r
+          LEFT JOIN bot_analysis b ON r.id = b.match_id
+          WHERE r.league = ? AND r.match_date IN (?, ?) AND r.home_goals IS NULL
+          ORDER BY r.match_date
+        `).bind(leagueCode, dateToday, dateTomorrow).all();
+
+        if (matches.length === 0) {
+          await editTelegram(token, chatId, messageId, `🏆 <b>${leagueCode}</b>\n\nဒီနေ့အတွက် ပွဲစဉ် မရှိပါ။`, {
+            inline_keyboard: [[{ text: "⬅️ နောက်သို့", callback_data: "menu_all_leagues" }]]
+          });
+          return new Response("OK", { status: 200 });
+        }
+
+        const keyboard = [];
+        for (const m of matches) {
+          const yIcon = m.y_match_status === "YES" ? "🔥 " : "";
+          keyboard.push([{ text: `${yIcon}${m.home_team} vs ${m.away_team}`, callback_data: `match_${m.id}` }]);
+        }
+        keyboard.push([{ text: "⬅️ နောက်သို့", callback_data: "menu_all_leagues" }]);
+
+        await editTelegram(token, chatId, messageId, `🏆 <b>${leagueCode} - ပွဲစဉ်များ</b>\n\nကြည့်ချင်တဲ့ ပွဲစဉ်ကို ရွေးပါ —`, { inline_keyboard: keyboard });
+      }
+
+      // ပွဲစဉ်တစ်ခု နှိပ်ရင် Details ပြမယ်
+      if (data.startsWith("match_")) {
+        const matchId = data.replace("match_", "");
+        const { results: matchData } = await env.DB.prepare(`
+          SELECT r.home_team, r.away_team, r.match_date, r.league, r.total_line, r.ah_line, 
+                 b.overall_points, b.ha_points, b.y_match_status
+          FROM raw_matches r
+          LEFT JOIN bot_analysis b ON r.id = b.match_id
+          WHERE r.id = ?
+        `).bind(matchId).all();
+
+        if (matchData.length > 0) {
+          const m = matchData[0];
+          const overall = m.overall_points ? Number(m.overall_points).toFixed(2) : "မရှိပါ";
+          const ha = m.ha_points ? Number(m.ha_points).toFixed(2) : "မရှိပါ";
+          const yStatus = m.y_match_status === "YES" ? "🔥 YES" : "NO";
+          const totalLine = m.total_line || "မရှိပါ";
+          const ahLine = m.ah_line || "မရှိပါ";
+
+          const msg = `⚽ <b>${m.home_team} vs ${m.away_team}</b>\n\n` +
+                      `🏆 လိဂ်: ${m.league}\n` +
+                      `📅 ရက်: ${m.match_date}\n` +
+                      `📊 Overall: <b>${overall}</b>\n` +
+                      `📊 HA: <b>${ha}</b>\n` +
+                      `🎯 Total Line: ${totalLine}\n` +
+                      `📏 AH Line: ${ahLine}\n` +
+                      `🔥 Y-Match: <b>${yStatus}</b>`;
+
+          await editTelegram(token, chatId, messageId, msg, {
+            inline_keyboard: [[{ text: "⬅️ နောက်သို့", callback_data: `league_${m.league}` }]]
+          });
+        }
+      }
+
+      // Y League နှိပ်ရင် Y ဖြစ်တဲ့ပွဲတွေ ပြမယ်
+      if (data === "menu_y_league") {
+        const { results: yesMatches } = await env.DB.prepare(`
+          SELECT r.id, r.home_team, r.away_team, r.league
+          FROM bot_analysis b
+          JOIN raw_matches r ON r.id = b.match_id
+          WHERE b.y_match_status = 'YES' AND b.ha_points > 0
+          ORDER BY r.match_date LIMIT 20
+        `).all();
+
+        if (yesMatches.length === 0) {
+          await editTelegram(token, chatId, messageId, "🔥 <b>Y-Match မရှိပါ။</b>", {
+            inline_keyboard: [[{ text: "⬅️ နောက်သို့", callback_data: "menu_main" }]]
+          });
+        } else {
+          const keyboard = [];
+          for (const m of yesMatches) {
+            keyboard.push([{ text: `🔥 ${m.home_team} vs ${m.away_team}`, callback_data: `match_${m.id}` }]);
+          }
+          keyboard.push([{ text: "⬅️ နောက်သို့", callback_data: "menu_main" }]);
+          await editTelegram(token, chatId, messageId, "🔥 <b>Y-Match (YES) ပွဲစဉ်များ</b>\n\nကြည့်ချင်တဲ့ ပွဲစဉ်ကို ရွေးပါ —", { inline_keyboard: keyboard });
+        }
+      }
+
+      // Telegram ကို အတည်ပြုချက် ပြန်ပို့မယ်
+      await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ callback_query_id: update.callback_query.id })
+      });
+    }
+
+    return new Response("OK", { status: 200 });
+  } catch (err) {
+    return json({ status: "error", message: err.message }, 500);
+  }
+          }
     return new Response("Not Found", { status: 404 });
   }
 };
@@ -291,6 +453,23 @@ async function lastN(env, mode, team, beforeDate, n, league = null) {
   const { results } = await env.DB.prepare(sql).bind(...bind).all();
   return results;
   }
+// ✅ Telegram Message အသစ် ပို့ဖို့ Helper
+async function sendTelegram(token, chatId, text, replyMarkup) {
+  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, text: text, parse_mode: "HTML", reply_markup: replyMarkup })
+  });
+}
+
+// ✅ Telegram Message ကို ပြင်ဖို့ (Edit) Helper
+async function editTelegram(token, chatId, messageId, text, replyMarkup) {
+  await fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, message_id: messageId, text: text, parse_mode: "HTML", reply_markup: replyMarkup })
+  });
+}
 function syncOddsToWorker() {
   const INFER_API_KEY = "isk_nCWYx-HnRVqgipHcl6aH0FwEkpMeFcKt"; 
   const WORKER_URL = "https://proud-violet-6126.wayne-rooney-mdy86.workers.dev";
