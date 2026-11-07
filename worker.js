@@ -175,6 +175,19 @@ export default {
     if (url.pathname === "/sync-odds") {
   try {
     if (!env.INFER_API_KEY) throw new Error("INFER_API_KEY မထည့်ရသေးပါ။");
+    
+    // ၁။ သင့်လိဂ် ID တွေ စာရင်း
+    const targetLeagueIds = [
+      "lg_T9268DXK", "lg_NVRGJ4SZ", "lg_28PAYC53", "lg_WYMR6XBG", "lg_FH9KCTA5", // England
+      "lg_PYBWSDEA", "lg_WHR6XBGZ", // Spain
+      "lg_QXCSBRME", "lg_T99K68DX", // Italy
+      "lg_PGYWSDEA", "lg_WG8R6XBG", // Germany
+      "lg_CNSP3BPA", "lg_YS9BW2MS", // France
+      "lg_EH3F3MDQ", // Netherlands
+      "lg_FA2KCTA5", // Belgium
+      "lg_HB26EKC0"  // Portugal
+    ];
+
     const manualMap = {
       "Man Utd": "Man United", "Nott'm Forest": "Nottm Forest", "Sheffield Weds": "Sheffield Wednesday",
       "West Brom": "West Bromwich Albion", "Spurs": "Tottenham", "Newcastle": "Newcastle United",
@@ -187,22 +200,27 @@ export default {
     });
     if (!apiRes.ok) throw new Error(`API Error: ${apiRes.status}`);
     const apiData = await apiRes.json();
+    
     const events = apiData.data || apiData.events || [];
-
-    // ✅ DEBUG MODE အတွက် ပြင်ဆင်ချက်
     const isDebug = url.searchParams.get("debug") === "true";
     let debugLog = [];
-
     let matchedCount = 0;
+
     for (const event of events) {
       try {
+        // ၂။ အရေးကြီးဆုံး အပိုင်း - လိဂ် ID ကိုက်ညီမှသာ ဆက်လုပ်မယ်
+        const apiLeagueId = event.league?.id || "";
+        if (!targetLeagueIds.includes(apiLeagueId)) {
+          continue; // မကိုက်ညီရင် ကျော်သွားမယ် (ဥပမာ - MexicoW ကို ကျော်မယ်)
+        }
+
         const rawApiHome = event.home_team?.name || "";
         const rawApiAway = event.away_team?.name || "";
         
-        // Debug အတွက် API က လာတဲ့ နာမည်အရင်း
         if (isDebug) {
           debugLog.push({
-            step: "API Event",
+            step: "API Event Found (League Matched)",
+            league_name: event.league?.name,
             api_home: rawApiHome,
             api_away: rawApiAway
           });
@@ -214,17 +232,16 @@ export default {
 
         // Database မှာ ရှာခြင်း
         const { results: dbMatches } = await env.DB.prepare(`
-          SELECT id, home_team, away_team FROM raw_matches
+          SELECT id, league, home_team, away_team FROM raw_matches
           WHERE home_goals IS NULL AND (home_team LIKE ? AND away_team LIKE ?)
           LIMIT 5
         `).bind(`%${mappedApiHome}%`, `%${mappedApiAway}%`).all();
 
         if (isDebug && dbMatches.length === 0) {
-          // DB မှာ မတွေ့ရင် ဘယ်လို ရှာနေလဲဆိုတာ log ထုတ်
           debugLog.push({
             step: "DB Search Fail",
             searching_for: `${mappedApiHome} vs ${mappedApiAway}`,
-            result: "No match found"
+            result: "No match found in DB"
           });
         }
 
@@ -278,7 +295,7 @@ export default {
         matchedCount++;
         if (isDebug) {
             debugLog.push({
-                step: "Success",
+                step: "Success (Odds Updated)",
                 matched_db: `${foundMatch.home_team} vs ${foundMatch.away_team}`,
                 total_line: totalLine,
                 ah_line: ahLine
