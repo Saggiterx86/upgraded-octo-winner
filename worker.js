@@ -302,6 +302,33 @@ export default {
     return json({ status: "error", message: err.message }, 500);
   }
     }
+    // ✅ App Script ကနေ Odds တွေ လက်ခံပြီး D1 ထဲ သိမ်းဖို့ Route အသစ်
+if (url.pathname === "/update-odds" && request.method === "POST") {
+  try {
+    const body = await request.json();
+    const oddsData = body.odds; // App Script က ပို့လိုက်တဲ့ Array
+    
+    if (!oddsData || !Array.isArray(oddsData)) {
+      return json({ status: "error", message: "Invalid data format" }, 400);
+    }
+
+    let updatedCount = 0;
+    for (const item of oddsData) {
+      try {
+        await env.DB.prepare(`
+          UPDATE raw_matches 
+          SET total_line = ?, ah_line = ?, updated_at = CURRENT_TIMESTAMP 
+          WHERE id = ?
+        `).bind(item.total_line, item.ah_line, item.match_id).run();
+        updatedCount++;
+      } catch (e) {}
+    }
+
+    return json({ status: "success", updated_count: updatedCount });
+  } catch (err) {
+    return json({ status: "error", message: err.message }, 500);
+  }
+}
 
     if (url.pathname === "/calculate") {
       try {
