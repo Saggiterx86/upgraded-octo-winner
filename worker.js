@@ -176,7 +176,6 @@ export default {
   try {
     if (!env.INFER_API_KEY) throw new Error("INFER_API_KEY မထည့်ရသေးပါ။");
     
-    // ၁။ သင့်လိဂ် ID တွေ စာရင်း
     const targetLeagueIds = [
       "lg_T9268DXK", "lg_NVRGJ4SZ", "lg_28PAYC53", "lg_WYMR6XBG", "lg_FH9KCTA5", // England
       "lg_PYBWSDEA", "lg_WHR6XBGZ", // Spain
@@ -195,120 +194,107 @@ export default {
       "Ein Frankfurt": "Eintracht Frankfurt", "Paris SG": "Paris Saint Germain", "Inter": "Inter Milan", "Milan": "AC Milan"
     };
 
-    const apiRes = await fetch("https://api.infersports.dev/v1/events?sport=football&status=scheduled&limit=100", {
-      headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` }
-    });
-    if (!apiRes.ok) throw new Error(`API Error: ${apiRes.status}`);
-    const apiData = await apiRes.json();
-    
-    const events = apiData.data || apiData.events || [];
+    let totalEventsChecked = 0;
+    let matchedCount = 0;
     const isDebug = url.searchParams.get("debug") === "true";
     let debugLog = [];
-    let matchedCount = 0;
 
-    for (const event of events) {
+    // ၁။ လိဂ်တစ်ခုချင်းစီအတွက် Loop ပတ်မယ်
+    for (const leagueId of targetLeagueIds) {
       try {
-        // ၂။ အရေးကြီးဆုံး အပိုင်း - လိဂ် ID ကိုက်ညီမှသာ ဆက်လုပ်မယ်
-        const apiLeagueId = event.league?.id || "";
-        if (!targetLeagueIds.includes(apiLeagueId)) {
-          continue; // မကိုက်ညီရင် ကျော်သွားမယ် (ဥပမာ - MexicoW ကို ကျော်မယ်)
-        }
-
-        const rawApiHome = event.home_team?.name || "";
-        const rawApiAway = event.away_team?.name || "";
+        const apiRes = await fetch(`https://api.infersports.dev/v1/events?sport=football&status=scheduled&limit=100&league=${leagueId}`, {
+          headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` }
+        });
+        if (!apiRes.ok) continue; // API Error တက်ရင် နောက်လိဂ်ကို ဆက်သွားမယ်
         
-        if (isDebug) {
-          debugLog.push({
-            step: "API Event Found (League Matched)",
-            league_name: event.league?.name,
-            api_home: rawApiHome,
-            api_away: rawApiAway
-          });
-        }
+        const apiData = await apiRes.json();
+        const events = apiData.data || apiData.events || [];
+        totalEventsChecked += events.length;
 
-        const mappedApiHome = manualMap[rawApiHome] || rawApiHome;
-        const mappedApiAway = manualMap[rawApiAway] || rawApiAway;
-        if (!mappedApiHome || !mappedApiAway) continue;
+        // ၂။ ရလာတဲ့ ပွဲစဉ်တွေကို တစ်ခုချင်း စစ်မယ်
+        for (const event of events) {
+          try {
+            const rawApiHome = event.home_team?.name || "";
+            const rawApiAway = event.away_team?.name || "";
+            
+            const mappedApiHome = manualMap[rawApiHome] || rawApiHome;
+            const mappedApiAway = manualMap[rawApiAway] || rawApiAway;
+            if (!mappedApiHome || !mappedApiAway) continue;
 
-        // Database မှာ ရှာခြင်း
-        const { results: dbMatches } = await env.DB.prepare(`
-          SELECT id, league, home_team, away_team FROM raw_matches
-          WHERE home_goals IS NULL AND (home_team LIKE ? AND away_team LIKE ?)
-          LIMIT 5
-        `).bind(`%${mappedApiHome}%`, `%${mappedApiAway}%`).all();
+            // Database မှာ ရှာခြင်း
+            const { results: dbMatches } = await env.DB.prepare(`
+              SELECT id, league, home_team, away_team FROM raw_matches
+              WHERE home_goals IS NULL AND (home_team LIKE ? AND away_team LIKE ?)
+              LIMIT 5
+            `).bind(`%${mappedApiHome}%`, `%${mappedApiAway}%`).all();
 
-        if (isDebug && dbMatches.length === 0) {
-          debugLog.push({
-            step: "DB Search Fail",
-            searching_for: `${mappedApiHome} vs ${mappedApiAway}`,
-            result: "No match found in DB"
-          });
-        }
+            let foundMatch = null;
+            for (const dbMatch of dbMatches) {
+              const dbH = dbMatch.home_team.toLowerCase();
+              const dbA = dbMatch.away_team.toLowerCase();
+              const apiH = mappedApiHome.toLowerCase();
+              const apiA = mappedApiAway.toLowerCase();
+              if ((apiH.includes(dbH) || dbH.includes(apiH)) && (apiA.includes(dbA) || dbA.includes(apiA))) {
+                foundMatch = dbMatch;
+                break;
+              }
+            }
+            
+            if (!foundMatch) {
+                if (isDebug && dbMatches.length > 0) {
+                    debugLog.push({
+                        step: "Partial Search Fail",
+                        searching_for: `${mappedApiHome} vs ${mappedApiAway}`,
+                        found_in_db: dbMatches.map(m => `${m.home_team} vs ${m.away_team}`)
+                    });
+                }
+                continue;
+            }
 
-        let foundMatch = null;
-        for (const dbMatch of dbMatches) {
-          const dbH = dbMatch.home_team.toLowerCase();
-          const dbA = dbMatch.away_team.toLowerCase();
-          const apiH = mappedApiHome.toLowerCase();
-          const apiA = mappedApiAway.toLowerCase();
-          if ((apiH.includes(dbH) || dbH.includes(apiH)) && (apiA.includes(dbA) || dbA.includes(apiA))) {
-            foundMatch = dbMatch;
-            break;
-          }
-        }
-        
-        if (!foundMatch) {
-            if (isDebug && dbMatches.length > 0) {
+            // ၃။ Odds ဆွဲခြင်း
+            const oddsRes = await fetch(
+              `https://api.infersports.dev/v1/events/${event.id}/odds?markets=totals,asian_handicap`,
+              { headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` } }
+            );
+            let totalLine = null, ahLine = null;
+            if (oddsRes.ok) {
+              const oddsData = await oddsRes.json();
+              const markets = oddsData.markets || [];
+              const totals = markets.find(m => m.name === "totals");
+              const ah = markets.find(m => m.name === "asian_handicap");
+              if (totals?.outcomes) {
+                const over = totals.outcomes.find(o => o.name === "Over" || o.type === "over");
+                if (over) totalLine = parseFloat(over.line || over.handicap);
+              }
+              if (ah?.outcomes) {
+                const homeAh = ah.outcomes.find(o => o.name === "Home" || o.type === "home");
+                if (homeAh) ahLine = parseFloat(homeAh.line || homeAh.handicap);
+              }
+            }
+            await env.DB.prepare(`
+              UPDATE raw_matches SET total_line = ?, ah_line = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+            `).bind(totalLine, ahLine, foundMatch.id).run();
+            
+            matchedCount++;
+            if (isDebug) {
                 debugLog.push({
-                    step: "Partial Search Fail (Strict check failed)",
-                    searching_for: `${mappedApiHome} vs ${mappedApiAway}`,
-                    found_in_db: dbMatches.map(m => `${m.home_team} vs ${m.away_team}`)
+                    step: "Success",
+                    league: event.league?.name,
+                    matched_db: `${foundMatch.home_team} vs ${foundMatch.away_team}`,
+                    total_line: totalLine,
+                    ah_line: ahLine
                 });
             }
-            continue;
-        }
-
-        // Odds ဆွဲခြင်း
-        const oddsRes = await fetch(
-          `https://api.infersports.dev/v1/events/${event.id}/odds?markets=totals,asian_handicap`,
-          { headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` } }
-        );
-        let totalLine = null, ahLine = null;
-        if (oddsRes.ok) {
-          const oddsData = await oddsRes.json();
-          const markets = oddsData.markets || [];
-          const totals = markets.find(m => m.name === "totals");
-          const ah = markets.find(m => m.name === "asian_handicap");
-          if (totals?.outcomes) {
-            const over = totals.outcomes.find(o => o.name === "Over" || o.type === "over");
-            if (over) totalLine = parseFloat(over.line || over.handicap);
-          }
-          if (ah?.outcomes) {
-            const homeAh = ah.outcomes.find(o => o.name === "Home" || o.type === "home");
-            if (homeAh) ahLine = parseFloat(homeAh.line || homeAh.handicap);
-          }
-        }
-        await env.DB.prepare(`
-          UPDATE raw_matches SET total_line = ?, ah_line = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-        `).bind(totalLine, ahLine, foundMatch.id).run();
-        
-        matchedCount++;
-        if (isDebug) {
-            debugLog.push({
-                step: "Success (Odds Updated)",
-                matched_db: `${foundMatch.home_team} vs ${foundMatch.away_team}`,
-                total_line: totalLine,
-                ah_line: ahLine
-            });
+          } catch (e) {}
         }
       } catch (e) {}
     }
     
     if (isDebug) {
-      return json({ status: "debug", events_checked: events.length, matched: matchedCount, log: debugLog });
+      return json({ status: "debug", total_events_checked: totalEventsChecked, matched: matchedCount, log: debugLog });
     }
 
-    return json({ status: "success", events_checked: events.length, matched: matchedCount });
+    return json({ status: "success", total_events_checked: totalEventsChecked, matched: matchedCount });
   } catch (err) {
     return json({ status: "error", message: err.message }, 500);
   }
