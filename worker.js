@@ -3,8 +3,6 @@ export default {
     const baseUrl = "https://proud-violet-6126.wayne-rooney-mdy86.workers.dev";
     ctx.waitUntil((async () => {
       try {
-        // ✅ FIX #3: /sync-csv ကို တစ်ခါတည်း မခေါ်တော့ဘဲ /daily-scan ကို ခေါ်
-        // (daily-scan က လိဂ်တစ်ခုချင်း loop ခေါ်လို့ subrequest limit မကျော်)
         await fetch(`${baseUrl}/daily-scan`);
       } catch (e) {
         console.error("Cron Job Error:", e);
@@ -28,9 +26,6 @@ export default {
       }
     }
 
-    // ==========================================
-    // DEBUG DATA
-    // ==========================================
     if (url.pathname === "/debug-data") {
       try {
         const team = url.searchParams.get("team") || "Mainz";
@@ -44,9 +39,7 @@ export default {
         const haSum = sumGoals(homeHA);
 
         return json({
-          team: team,
-          league: league,
-          before_date: beforeDate,
+          team: team, league: league, before_date: beforeDate,
           overall_matches_found: homeOverall.length,
           overall_matches_data: homeOverall,
           overall_sum_goals: overallSum,
@@ -64,10 +57,7 @@ export default {
     if (url.pathname === "/sync-csv") {
       try {
         const single = url.searchParams.get("league");
-        const leagues = single
-          ? [single]
-          : ['E0','E1','E2','E3','EC','SP1','SP2','I1','I2','D1','D2','F1','F2','N1','P1','B1','G1','SC0'];
-
+        const leagues = single ? [single] : ['E0','E1','E2','E3','EC','SP1','SP2','I1','I2','D1','D2','F1','F2','N1','P1','B1','G1','SC0'];
         let totalRows = 0;
 
         for (const leagueCode of leagues) {
@@ -80,13 +70,9 @@ export default {
               if (rows.length > 1) {
                 const headers = rows[0].map(h => h.trim());
                 const ix = {
-                  date: headers.indexOf("Date"),
-                  home: headers.indexOf("HomeTeam"),
-                  away: headers.indexOf("AwayTeam"),
-                  fthg: headers.indexOf("FTHG"),
-                  ftag: headers.indexOf("FTAG"),
-                  b365h: headers.indexOf("B365H"),
-                  b365a: headers.indexOf("B365A"),
+                  date: headers.indexOf("Date"), home: headers.indexOf("HomeTeam"), away: headers.indexOf("AwayTeam"),
+                  fthg: headers.indexOf("FTHG"), ftag: headers.indexOf("FTAG"),
+                  b365h: headers.indexOf("B365H"), b365a: headers.indexOf("B365A"),
                 };
                 if (ix.date !== -1 && ix.home !== -1 && ix.away !== -1) {
                   for (let i = 1; i < rows.length; i += 50) {
@@ -105,17 +91,13 @@ export default {
                         INSERT INTO raw_matches (league, match_date, home_team, away_team, home_goals, away_goals, b365h, b365a)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(league, match_date, home_team, away_team)
-                        DO UPDATE SET home_goals = excluded.home_goals,
-                                      away_goals = excluded.away_goals,
+                        DO UPDATE SET home_goals = excluded.home_goals, away_goals = excluded.away_goals,
                                       b365h = COALESCE(excluded.b365h, raw_matches.b365h),
                                       b365a = COALESCE(excluded.b365a, raw_matches.b365a),
                                       updated_at = CURRENT_TIMESTAMP
                       `).bind(leagueCode, formattedDate, r[ix.home], r[ix.away], hg, ag, bH, bA));
                     }
-                    if (stmts.length) {
-                      await env.DB.batch(stmts);
-                      totalRows += stmts.length;
-                    }
+                    if (stmts.length) { await env.DB.batch(stmts); totalRows += stmts.length; }
                   }
                 }
               }
@@ -123,9 +105,7 @@ export default {
           } catch (e) {}
         }
         return json({ status: "success", rows_processed: totalRows, leagues_synced: leagues.length });
-      } catch (err) {
-        return json({ status: "error", message: err.message }, 500);
-      }
+      } catch (err) { return json({ status: "error", message: err.message }, 500); }
     }
 
     if (url.pathname === "/sync-fixtures") {
@@ -137,15 +117,10 @@ export default {
         if (rows.length < 2) return json({ status: "success", rows_processed: 0 });
 
         const headers = rows[0].map(h => h.trim());
-        const ix = {
-          div: headers.indexOf("Div"),
-          date: headers.indexOf("Date"),
-          home: headers.indexOf("HomeTeam"),
-          away: headers.indexOf("AwayTeam"),
-        };
+        const ix = { div: headers.indexOf("Div"), date: headers.indexOf("Date"), home: headers.indexOf("HomeTeam"), away: headers.indexOf("AwayTeam") };
         const leagues = ['E0','E1','E2','E3','EC','SP1','SP2','I1','I2','D1','D2','F1','F2','N1','P1','B1','G1','SC0'];
-
         let totalRows = 0;
+
         for (let i = 1; i < rows.length; i += 50) {
           const stmts = [];
           for (let j = i; j < Math.min(i + 50, rows.length); j++) {
@@ -154,181 +129,48 @@ export default {
             if (!leagues.includes(r[ix.div])) continue;
             const formattedDate = formatDate(r[ix.date]);
             if (!formattedDate) continue;
-
             stmts.push(env.DB.prepare(`
               INSERT INTO raw_matches (league, match_date, home_team, away_team)
-              VALUES (?, ?, ?, ?)
-              ON CONFLICT(league, match_date, home_team, away_team) DO NOTHING
+              VALUES (?, ?, ?, ?) ON CONFLICT(league, match_date, home_team, away_team) DO NOTHING
             `).bind(r[ix.div], formattedDate, r[ix.home], r[ix.away]));
           }
-          if (stmts.length) {
-            await env.DB.batch(stmts);
-            totalRows += stmts.length;
-          }
+          if (stmts.length) { await env.DB.batch(stmts); totalRows += stmts.length; }
         }
         return json({ status: "success", rows_processed: totalRows });
-      } catch (err) {
-        return json({ status: "error", message: err.message }, 500);
-      }
+      } catch (err) { return json({ status: "error", message: err.message }, 500); }
     }
 
-    if (url.pathname === "/sync-odds") {
-  try {
-    if (!env.INFER_API_KEY) throw new Error("INFER_API_KEY မထည့်ရသေးပါ။");
-    
-    const targetLeagueIds = [
-      "lg_T9268DXK", "lg_NVRGJ4SZ", "lg_28PAYC53", "lg_WYMR6XBG", "lg_FH9KCTA5", // England
-      "lg_PYBWSDEA", "lg_WHR6XBGZ", // Spain
-      "lg_QXCSBRME", "lg_T99K68DX", // Italy
-      "lg_PGYWSDEA", "lg_WG8R6XBG", // Germany
-      "lg_CNSP3BPA", "lg_YS9BW2MS", // France
-      "lg_EH3F3MDQ", // Netherlands
-      "lg_FA2KCTA5", // Belgium
-      "lg_HB26EKC0"  // Portugal
-    ];
-
-    const manualMap = {
-      "Man Utd": "Man United", "Nott'm Forest": "Nottm Forest", "Sheffield Weds": "Sheffield Wednesday",
-      "West Brom": "West Bromwich Albion", "Spurs": "Tottenham", "Newcastle": "Newcastle United",
-      "B.Munchen": "Bayern Munich", "W.Bremen": "Werder Bremen", "M'gladbach": "Borussia Monchengladbach",
-      "Ein Frankfurt": "Eintracht Frankfurt", "Paris SG": "Paris Saint Germain", "Inter": "Inter Milan", "Milan": "AC Milan"
-    };
-
-    let totalEventsChecked = 0;
-    let matchedCount = 0;
-    let oddsFetchedCount = 0;
-    const isDebug = url.searchParams.get("debug") === "true";
-    let debugLog = [];
-
-    // ၁။ လိဂ်တစ်ခုချင်းစီအတွက် Loop ပတ်မယ်
-    for (const leagueId of targetLeagueIds) {
+    if (url.pathname === "/find-match") {
       try {
-        const apiRes = await fetch(`https://api.infersports.dev/v1/events?sport=football&status=scheduled&limit=100&league=${leagueId}`, {
-          headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` }
-        });
-        if (!apiRes.ok) continue; 
-        
-        const apiData = await apiRes.json();
-        const events = apiData.data || apiData.events || [];
-        totalEventsChecked += events.length;
+        const home = url.searchParams.get("home");
+        const away = url.searchParams.get("away");
+        if (!home || !away) return json({ status: "error", message: "Missing params" }, 400);
+        const { results: dbMatches } = await env.DB.prepare(`
+          SELECT id FROM raw_matches WHERE home_goals IS NULL AND (home_team LIKE ? AND away_team LIKE ?) LIMIT 5
+        `).bind(`%${home}%`, `%${away}%`).all();
+        let foundId = null;
+        for (const dbMatch of dbMatches) { foundId = dbMatch.id; break; }
+        return json({ match_id: foundId });
+      } catch (err) { return json({ status: "error", message: err.message }, 500); }
+    }
 
-        // ၂။ ရလာတဲ့ ပွဲစဉ်တွေကို တစ်ခုချင်း စစ်မယ်
-        for (const event of events) {
-          // Cloudflare Subrequest Limit မကျော်အောင် Odds ဆွဲတာ ၁၅ ခုပြည့်ရင် ရပ်မယ်
-          if (oddsFetchedCount >= 15) {
-            if (isDebug) debugLog.push({ step: "Limit Reached", message: "Subrequest limit မကျော်အောင် Odds ဆွဲတာ ၁၅ ခုမှာ ရပ်လိုက်ပါတယ်။" });
-            break;
-          }
-
+    if (url.pathname === "/update-odds" && request.method === "POST") {
+      try {
+        const body = await request.json();
+        const oddsData = body.odds;
+        if (!oddsData || !Array.isArray(oddsData)) return json({ status: "error", message: "Invalid data format" }, 400);
+        let updatedCount = 0;
+        for (const item of oddsData) {
           try {
-            const rawApiHome = event.home_team?.name || "";
-            const rawApiAway = event.away_team?.name || "";
-            
-            const mappedApiHome = manualMap[rawApiHome] || rawApiHome;
-            const mappedApiAway = manualMap[rawApiAway] || rawApiAway;
-            if (!mappedApiHome || !mappedApiAway) continue;
-
-            // Database မှာ ရှာခြင်း
-            const { results: dbMatches } = await env.DB.prepare(`
-              SELECT id, league, home_team, away_team FROM raw_matches
-              WHERE home_goals IS NULL AND (home_team LIKE ? AND away_team LIKE ?)
-              LIMIT 5
-            `).bind(`%${mappedApiHome}%`, `%${mappedApiAway}%`).all();
-
-            let foundMatch = null;
-            for (const dbMatch of dbMatches) {
-              const dbH = dbMatch.home_team.toLowerCase();
-              const dbA = dbMatch.away_team.toLowerCase();
-              const apiH = mappedApiHome.toLowerCase();
-              const apiA = mappedApiAway.toLowerCase();
-              if ((apiH.includes(dbH) || dbH.includes(apiH)) && (apiA.includes(dbA) || dbA.includes(apiA))) {
-                foundMatch = dbMatch;
-                break;
-              }
-            }
-            
-            if (!foundMatch) continue;
-
-            // ၃။ Odds ဆွဲခြင်း
-            oddsFetchedCount++; // Odds ဆွဲတဲ့ အရေအတွက် တိုးမယ်
-            const oddsRes = await fetch(
-              `https://api.infersports.dev/v1/events/${event.id}/odds`,
-              { headers: { "Authorization": `Bearer ${env.INFER_API_KEY}` } }
-            );
-            let totalLine = null, ahLine = null;
-            
-            if (oddsRes.ok) {
-              const oddsData = await oddsRes.json();
-              const oddsArray = oddsData.odds || []; 
-              
-              // Total Line ကို ရှာမယ် (Full Time ကိုပဲ ယူမယ်)
-              const totalOdds = oddsArray.find(o => o.market_type === "totals" && o.period === "full_time" && o.line !== null);
-              if (totalOdds) {
-                totalLine = parseFloat(totalOdds.line);
-              }
-
-              // AH Line ကို ရှာမယ် (Full Time ကိုပဲ ယူမယ်)
-              const ahOdds = oddsArray.find(o => o.market_type === "asian_handicap" && o.period === "full_time" && o.line !== null);
-              if (ahOdds) {
-                ahLine = parseFloat(ahOdds.line);
-              }
-            }
-
             await env.DB.prepare(`
               UPDATE raw_matches SET total_line = ?, ah_line = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
-            `).bind(totalLine, ahLine, foundMatch.id).run();
-            
-            matchedCount++;
-            if (isDebug) {
-                debugLog.push({
-                    step: "Success",
-                    league: event.league?.name,
-                    matched_db: `${foundMatch.home_team} vs ${foundMatch.away_team}`,
-                    total_line: totalLine,
-                    ah_line: ahLine
-                });
-            }
+            `).bind(item.total_line, item.ah_line, item.match_id).run();
+            updatedCount++;
           } catch (e) {}
         }
-      } catch (e) {}
+        return json({ status: "success", updated_count: updatedCount });
+      } catch (err) { return json({ status: "error", message: err.message }, 500); }
     }
-    
-    if (isDebug) {
-      return json({ status: "debug", total_events_checked: totalEventsChecked, matched: matchedCount, log: debugLog });
-    }
-
-    return json({ status: "success", total_events_checked: totalEventsChecked, matched: matchedCount });
-  } catch (err) {
-    return json({ status: "error", message: err.message }, 500);
-  }
-    }
-    // ✅ App Script ကနေ Odds တွေ လက်ခံပြီး D1 ထဲ သိမ်းဖို့ Route အသစ်
-if (url.pathname === "/update-odds" && request.method === "POST") {
-  try {
-    const body = await request.json();
-    const oddsData = body.odds; // App Script က ပို့လိုက်တဲ့ Array
-    
-    if (!oddsData || !Array.isArray(oddsData)) {
-      return json({ status: "error", message: "Invalid data format" }, 400);
-    }
-
-    let updatedCount = 0;
-    for (const item of oddsData) {
-      try {
-        await env.DB.prepare(`
-          UPDATE raw_matches 
-          SET total_line = ?, ah_line = ?, updated_at = CURRENT_TIMESTAMP 
-          WHERE id = ?
-        `).bind(item.total_line, item.ah_line, item.match_id).run();
-        updatedCount++;
-      } catch (e) {}
-    }
-
-    return json({ status: "success", updated_count: updatedCount });
-  } catch (err) {
-    return json({ status: "error", message: err.message }, 500);
-  }
-}
 
     if (url.pathname === "/calculate") {
       try {
@@ -338,134 +180,74 @@ if (url.pathname === "/update-odds" && request.method === "POST") {
         const mmStart = new Date(Date.UTC(mmNow.getUTCFullYear(), mmNow.getUTCMonth(), mmNow.getUTCDate()));
         const windowStart = new Date(mmStart.getTime() + mmOffsetMs);
         const windowEnd = new Date(windowStart.getTime() + 24 * 60 * 60 * 1000 - 60 * 1000);
-
         const dateToday = toYMD(windowStart);
         const dateTomorrow = toYMD(windowEnd);
 
         const { results: matches } = await env.DB.prepare(`
           SELECT id, league, match_date, home_team, away_team, total_line, ah_line
-          FROM raw_matches
-          WHERE match_date IN (?, ?) AND home_goals IS NULL
-          ORDER BY league, match_date
+          FROM raw_matches WHERE match_date IN (?, ?) AND home_goals IS NULL ORDER BY league, match_date
         `).bind(dateToday, dateTomorrow).all();
 
         let calculated = [];
         for (const match of matches) {
-          // ✅ FIX #1: lastN ကို league ပါ ပေးပို့ (အသင်းနာမည်တူ မရောစေရန်)
           const homeOverall = await lastN(env, "home_team", match.home_team, match.match_date, 5, match.league);
           const awayOverall = await lastN(env, "away_team", match.away_team, match.match_date, 5, match.league);
-
           const homeHA = await lastN(env, "home_team_home", match.home_team, match.match_date, 5, match.league);
           const awayHA = await lastN(env, "away_team_away", match.away_team, match.match_date, 5, match.league);
 
-          let overallPoints = 0;
-          let haPoints = 0;
-
-          if (homeOverall.length === 5 && awayOverall.length === 5) {
-            overallPoints = (sumGoals(homeOverall) + sumGoals(awayOverall)) / 10;
-          }
-          if (homeHA.length === 5 && awayHA.length === 5) {
-            haPoints = (sumGoals(homeHA) + sumGoals(awayHA)) / 10;
-          }
+          let overallPoints = 0; let haPoints = 0;
+          if (homeOverall.length === 5 && awayOverall.length === 5) overallPoints = (sumGoals(homeOverall) + sumGoals(awayOverall)) / 10;
+          if (homeHA.length === 5 && awayHA.length === 5) haPoints = (sumGoals(homeHA) + sumGoals(awayHA)) / 10;
 
           const yMatch = (overallPoints > 2.5 && haPoints > 2.5) ? "YES" : "NO";
           const rulesHit = (overallPoints > 2.5 && haPoints > 2.5) ? "BOTH" : (overallPoints > 2.5 ? "OVERALL_ONLY" : (haPoints > 2.5 ? "HA_ONLY" : "NONE"));
 
-          // ✅ FIX #2: overall_points ကိုပါ သိမ်း
           await env.DB.prepare(`
             INSERT INTO bot_analysis (match_id, y_match_status, overall_points, ha_points, rules_hit, day_theory_hit)
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(match_id) DO UPDATE SET
-              y_match_status = excluded.y_match_status,
-              overall_points = excluded.overall_points,
-              ha_points = excluded.ha_points,
-              rules_hit = excluded.rules_hit,
-              day_theory_hit = excluded.day_theory_hit,
-              created_at = CURRENT_TIMESTAMP
+              y_match_status = excluded.y_match_status, overall_points = excluded.overall_points,
+              ha_points = excluded.ha_points, rules_hit = excluded.rules_hit, created_at = CURRENT_TIMESTAMP
           `).bind(match.id, yMatch, overallPoints, haPoints, rulesHit, null).run();
 
           calculated.push({
-            match_id: match.id,
-            league: match.league,
-            match: `${match.home_team} vs ${match.away_team}`,
-            date: match.match_date,
-            y_match: yMatch,
-            overall_point: Number(overallPoints.toFixed(2)),
-            ha_point: Number(haPoints.toFixed(2)),
-            total_line: match.total_line,
-            ah_line: match.ah_line,
+            match_id: match.id, league: match.league, match: `${match.home_team} vs ${match.away_team}`,
+            date: match.match_date, y_match: yMatch, overall_point: Number(overallPoints.toFixed(2)),
+            ha_point: Number(haPoints.toFixed(2)), total_line: match.total_line, ah_line: match.ah_line,
           });
         }
-
-        return json({
-          status: "success",
-          date_range: `${dateToday} → ${dateTomorrow}`,
-          total_matches: calculated.length,
-          yes_matches: calculated.filter(m => m.y_match === "YES").length,
-          matches: calculated
-        });
-      } catch (err) {
-        return json({ status: "error", message: err.message }, 500);
-      }
+        return json({ status: "success", date_range: `${dateToday} → ${dateTomorrow}`, total_matches: calculated.length, yes_matches: calculated.filter(m => m.y_match === "YES").length, matches: calculated });
+      } catch (err) { return json({ status: "error", message: err.message }, 500); }
     }
 
     if (url.pathname === "/send-telegram") {
       try {
         const token = "8925005543:AAHTLmna7_yU7L3sFPWaEei7-FpCyny-E0s";
         const chatId = "1821028384";
-
         const { results: matches } = await env.DB.prepare(`
-          SELECT b.match_id, r.league, r.match_date, r.home_team, r.away_team,
-                 r.total_line, r.ah_line, b.y_match_status, b.overall_points, b.ha_points, b.rules_hit
-          FROM bot_analysis b
-          JOIN raw_matches r ON r.id = b.match_id
-          WHERE b.y_match_status = 'YES' AND b.ha_points > 0
-          ORDER BY r.match_date, r.league
-          LIMIT 20
+          SELECT b.match_id, r.league, r.match_date, r.home_team, r.away_team, r.total_line, r.ah_line, b.y_match_status, b.overall_points, b.ha_points, b.rules_hit
+          FROM bot_analysis b JOIN raw_matches r ON r.id = b.match_id
+          WHERE b.y_match_status = 'YES' AND b.ha_points > 0 ORDER BY r.match_date, r.league LIMIT 20
         `).all();
 
-        if (matches.length === 0) {
-          return json({ status: "success", message: "YES ပွဲစဉ် မရှိပါ။" });
-        }
+        if (matches.length === 0) return json({ status: "success", message: "YES ပွဲစဉ် မရှိပါ။" });
 
         let msg = "🔥 <b>Football Y-Match Scanner</b> 🔥\n\n";
         for (const m of matches) {
-          msg += `⚽ <b>${m.home_team} vs ${m.away_team}</b>\n`;
-          msg += `🏆 လိဂ်: ${m.league} | 📅 ရက်: ${m.match_date}\n`;
-          // ✅ FIX #2: ပြန်မတွက်တော့ဘဲ DB က တိုက်ရိုက်ဖတ်
+          msg += `⚽ <b>${m.home_team} vs ${m.away_team}</b>\n🏆 လိဂ်: ${m.league} | 📅 ရက်: ${m.match_date}\n`;
           msg += `📊 Overall: <b>${Number(m.overall_points).toFixed(2)}</b> | HA: <b>${Number(m.ha_points).toFixed(2)}</b>\n`;
           if (m.total_line) msg += `🎯 Total Line: ${m.total_line}\n`;
-          if (m.ah_line) msg += `📏 AH Line: ${m.ah_line}\n`;
-          msg += `\n`;
+          if (m.ah_line) msg += `📏 AH Line: ${m.ah_line}\n\n`;
         }
 
-        const replyMarkup = {
-          inline_keyboard: [
-            [{ text: "📊 အားလုံးကြည့်ရန်", url: "https://proud-violet-6126.wayne-rooney-mdy86.workers.dev/calculate" }],
-            [{ text: "🔄 ပြန်စစ်ရန်", url: "https://proud-violet-6126.wayne-rooney-mdy86.workers.dev/daily-scan" }]
-          ]
-        };
-
+        const replyMarkup = { inline_keyboard: [[{ text: "📊 အားလုံးကြည့်ရန်", url: "https://proud-violet-6126.wayne-rooney-mdy86.workers.dev/calculate" }, { text: "🔄 ပြန်စစ်ရန်", url: "https://proud-violet-6126.wayne-rooney-mdy86.workers.dev/daily-scan" }]] };
         const tgRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            chat_id: chatId,
-            text: msg,
-            parse_mode: "HTML",
-            reply_markup: replyMarkup
-          })
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML", reply_markup: replyMarkup })
         });
-
-        if (!tgRes.ok) {
-          const err = await tgRes.text();
-          throw new Error("Telegram Error: " + err);
-        }
-
+        if (!tgRes.ok) throw new Error("Telegram Error: " + await tgRes.text());
         return json({ status: "success", sent_matches: matches.length });
-      } catch (err) {
-        return json({ status: "error", message: err.message }, 500);
-      }
+      } catch (err) { return json({ status: "error", message: err.message }, 500); }
     }
 
     if (url.pathname === "/daily-scan") {
@@ -473,136 +255,134 @@ if (url.pathname === "/update-odds" && request.method === "POST") {
         const base = url.origin;
         const leagues = ['E0','E1','E2','E3','EC','SP1','SP2','I1','I2','D1','D2','F1','F2','N1','P1','B1','G1','SC0'];
         let csvResult = 0;
-
-        for (const lg of leagues) {
-          try {
-            const r = await fetch(`${base}/sync-csv?league=${lg}`);
-            const j = await r.json();
-            csvResult += (j.rows_processed || 0);
-          } catch (e) {}
-        }
-
-        let fixResult = 0;
-        try {
-          const r = await fetch(`${base}/sync-fixtures`);
-          const j = await r.json();
-          fixResult = j.rows_processed || 0;
-        } catch (e) {}
-
-        let oddsResult = { matched: 0 };
-        try {
-          const r = await fetch(`${base}/sync-odds`);
-          oddsResult = await r.json();
-        } catch (e) {}
-
-        let calcResult = { total_matches: 0, yes_matches: 0 };
-        try {
-          const r = await fetch(`${base}/calculate`);
-          calcResult = await r.json();
-        } catch (e) {}
-
-        let tgResult = { sent_matches: 0 };
-        try {
-          const r = await fetch(`${base}/send-telegram`);
-          tgResult = await r.json();
-        } catch (e) {}
-
-        return json({
-          status: "success",
-          csv_rows: csvResult,
-          fixture_rows: fixResult,
-          odds_matched: oddsResult.matched || 0,
-          calculated: calcResult.total_matches || 0,
-          yes_matches: calcResult.yes_matches || 0,
-          telegram_sent: tgResult.sent_matches || 0,
-        });
-      } catch (err) {
-        return json({ status: "error", message: err.message }, 500);
-      }
+        for (const lg of leagues) { try { const r = await fetch(`${base}/sync-csv?league=${lg}`); const j = await r.json(); csvResult += (j.rows_processed || 0); } catch (e) {} }
+        let fixResult = 0; try { const r = await fetch(`${base}/sync-fixtures`); const j = await r.json(); fixResult = j.rows_processed || 0; } catch (e) {}
+        let oddsResult = { matched: 0 }; try { const r = await fetch(`${base}/sync-odds`); oddsResult = await r.json(); } catch (e) {}
+        let calcResult = { total_matches: 0, yes_matches: 0 }; try { const r = await fetch(`${base}/calculate`); calcResult = await r.json(); } catch (e) {}
+        let tgResult = { sent_matches: 0 }; try { const r = await fetch(`${base}/send-telegram`); tgResult = await r.json(); } catch (e) {}
+        return json({ status: "success", csv_rows: csvResult, fixture_rows: fixResult, odds_matched: oddsResult.matched || 0, calculated: calcResult.total_matches || 0, yes_matches: calcResult.yes_matches || 0, telegram_sent: tgResult.sent_matches || 0 });
+      } catch (err) { return json({ status: "error", message: err.message }, 500); }
     }
 
     return new Response("Not Found", { status: 404 });
   }
 };
 
-function json(obj, status = 200) {
-  return new Response(JSON.stringify(obj, null, 2), {
-    status,
-    headers: { "Content-Type": "application/json" }
-  });
-}
+function json(obj, status = 200) { return new Response(JSON.stringify(obj, null, 2), { status, headers: { "Content-Type": "application/json" } }); }
+function parseCSV(text) { const rows = []; let cur = [], field = "", inQuotes = false; for (let i = 0; i < text.length; i++) { const c = text[i]; if (inQuotes) { if (c === '"' && text[i + 1] === '"') { field += '"'; i++; } else if (c === '"') { inQuotes = false; } else { field += c; } } else { if (c === '"') inQuotes = true; else if (c === ',') { cur.push(field); field = ""; } else if (c === '\n') { cur.push(field); rows.push(cur); cur = []; field = ""; } else if (c !== '\r') { field += c; } } } if (field !== "" || cur.length) { cur.push(field); rows.push(cur); } return rows.filter(r => r.length && r.some(x => x !== "")); }
+function formatDate(raw) { if (!raw) return null; raw = raw.trim(); if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw; const parts = raw.split("/"); if (parts.length !== 3) return null; let [d, m, y] = parts; if (y.length === 2) y = "20" + y; return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`; }
+function toYMD(d) { return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`; }
+function sumGoals(rows) { return rows.reduce((s, r) => s + (r.home_goals || 0) + (r.away_goals || 0), 0); }
 
-function parseCSV(text) {
-  const rows = [];
-  let cur = [];
-  let field = "";
-  let inQuotes = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (inQuotes) {
-      if (c === '"' && text[i + 1] === '"') { field += '"'; i++; }
-      else if (c === '"') { inQuotes = false; }
-      else { field += c; }
-    } else {
-      if (c === '"') inQuotes = true;
-      else if (c === ',') { cur.push(field); field = ""; }
-      else if (c === '\n') { cur.push(field); rows.push(cur); cur = []; field = ""; }
-      else if (c === '\r') {}
-      else { field += c; }
-    }
-  }
-  if (field !== "" || cur.length) { cur.push(field); rows.push(cur); }
-  return rows.filter(r => r.length && r.some(x => x !== ""));
-}
-
-function formatDate(raw) {
-  if (!raw) return null;
-  raw = raw.trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
-  const parts = raw.split("/");
-  if (parts.length !== 3) return null;
-  let [d, m, y] = parts;
-  if (y.length === 2) y = "20" + y;
-  d = d.padStart(2, "0");
-  m = m.padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-
-function toYMD(d) {
-  const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(d.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function sumGoals(rows) {
-  return rows.reduce((s, r) => s + (r.home_goals || 0) + (r.away_goals || 0), 0);
-}
-
-// ✅ FIX #1: league param ထည့်
 async function lastN(env, mode, team, beforeDate, n, league = null) {
   let sql, bind;
   const leagueClause = league ? " AND league = ?" : "";
   const leagueBind = league ? [league] : [];
-
   if (mode === "home_team" || mode === "away_team") {
-    sql = `SELECT league, home_goals, away_goals FROM raw_matches
-           WHERE (home_team = ? OR away_team = ?) AND match_date < ? AND home_goals IS NOT NULL${leagueClause}
-           ORDER BY match_date DESC LIMIT ?`;
+    sql = `SELECT league, home_goals, away_goals FROM raw_matches WHERE (home_team = ? OR away_team = ?) AND match_date < ? AND home_goals IS NOT NULL${leagueClause} ORDER BY match_date DESC LIMIT ?`;
     bind = [team, team, beforeDate, ...leagueBind, n];
   } else if (mode === "home_team_home") {
-    sql = `SELECT league, home_goals, away_goals FROM raw_matches
-           WHERE home_team = ? AND match_date < ? AND home_goals IS NOT NULL${leagueClause}
-           ORDER BY match_date DESC LIMIT ?`;
+    sql = `SELECT league, home_goals, away_goals FROM raw_matches WHERE home_team = ? AND match_date < ? AND home_goals IS NOT NULL${leagueClause} ORDER BY match_date DESC LIMIT ?`;
     bind = [team, beforeDate, ...leagueBind, n];
   } else if (mode === "away_team_away") {
-    sql = `SELECT league, home_goals, away_goals FROM raw_matches
-           WHERE away_team = ? AND match_date < ? AND home_goals IS NOT NULL${leagueClause}
-           ORDER BY match_date DESC LIMIT ?`;
+    sql = `SELECT league, home_goals, away_goals FROM raw_matches WHERE away_team = ? AND match_date < ? AND home_goals IS NOT NULL${leagueClause} ORDER BY match_date DESC LIMIT ?`;
     bind = [team, beforeDate, ...leagueBind, n];
-  } else {
-    return [];
-  }
+  } else { return []; }
   const { results } = await env.DB.prepare(sql).bind(...bind).all();
   return results;
+  }
+function syncOddsToWorker() {
+  const INFER_API_KEY = "isk_nCWYx-HnRVqgipHcl6aH0FwEkpMeFcKt"; 
+  const WORKER_URL = "https://proud-violet-6126.wayne-rooney-mdy86.workers.dev";
+  
+  const targetLeagueIds = [
+    "lg_T9268DXK", "lg_NVRGJ4SZ", "lg_28PAYC53", "lg_WYMR6XBG", "lg_FH9KCTA5", // England
+    "lg_PYBWSDEA", "lg_WHR6XBGZ", // Spain
+    "lg_QXCSBRME", "lg_T99K68DX", // Italy
+    "lg_PGYWSDEA", "lg_WG8R6XBG", // Germany
+    "lg_CNSP3BPA", "lg_YS9BW2MS", // France
+    "lg_EH3F3MDQ", // Netherlands
+    "lg_FA2KCTA5", // Belgium
+    "lg_HB26EKC0"  // Portugal
+  ];
+
+  const manualMap = {
+    "Man Utd": "Man United", "Nott'm Forest": "Nottm Forest", "Sheffield Weds": "Sheffield Wednesday",
+    "West Brom": "West Bromwich Albion", "Spurs": "Tottenham", "Newcastle": "Newcastle United",
+    "B.Munchen": "Bayern Munich", "W.Bremen": "Werder Bremen", "M'gladbach": "Borussia Monchengladbach",
+    "Ein Frankfurt": "Eintracht Frankfurt", "Paris SG": "Paris Saint Germain", "Inter": "Inter Milan", "Milan": "AC Milan"
+  };
+
+  let allOddsToUpdate = []; 
+
+  for (const leagueId of targetLeagueIds) {
+    try {
+      const eventsUrl = `https://api.infersports.dev/v1/events?sport=football&status=scheduled&limit=100&league=${leagueId}`;
+      const evRes = UrlFetchApp.fetch(eventsUrl, {
+        "method": "get",
+        "headers": { "Authorization": "Bearer " + INFER_API_KEY }
+      });
+      const evJson = JSON.parse(evRes.getContentText());
+      const events = evJson.data || evJson.events || [];
+
+      for (const event of events) {
+        const rawApiHome = event.home_team?.name || "";
+        const rawApiAway = event.away_team?.name || "";
+        
+        const mappedApiHome = manualMap[rawApiHome] || rawApiHome;
+        const mappedApiAway = manualMap[rawApiAway] || rawApiAway;
+        if (!mappedApiHome || !mappedApiAway) continue;
+
+        const findUrl = `${WORKER_URL}/find-match?home=${encodeURIComponent(mappedApiHome)}&away=${encodeURIComponent(mappedApiAway)}`;
+        try {
+          const matchRes = UrlFetchApp.fetch(findUrl);
+          const matchJson = JSON.parse(matchRes.getContentText());
+          
+          if (!matchJson.match_id) continue; 
+
+          const oddsUrl = `https://api.infersports.dev/v1/events/${event.id}/odds`;
+          const oddsRes = UrlFetchApp.fetch(oddsUrl, {
+            "method": "get",
+            "headers": { "Authorization": "Bearer " + INFER_API_KEY }
+          });
+          const oddsJson = JSON.parse(oddsRes.getContentText());
+          const oddsArray = oddsJson.odds || [];
+
+          let totalLine = null;
+          let ahLine = null;
+
+          const totalOdds = oddsArray.find(o => o.market_type === "totals" && o.period === "full_time" && o.line !== null);
+          if (totalOdds) totalLine = parseFloat(totalOdds.line);
+
+          const ahOdds = oddsArray.find(o => o.market_type === "asian_handicap" && o.period === "full_time" && o.line !== null);
+          if (ahOdds) ahLine = parseFloat(ahOdds.line);
+
+          allOddsToUpdate.push({
+            match_id: matchJson.match_id,
+            total_line: totalLine,
+            ah_line: ahLine
+          });
+          
+          Utilities.sleep(200); 
+          
+        } catch (e) {
+          // Match ရှာမတွေ့ရင် ကျော်သွားမယ်
+        }
+      }
+    } catch (e) {
+      Logger.log("League Error: " + leagueId + " - " + e.message);
+    }
+  }
+
+  if (allOddsToUpdate.length > 0) {
+    const payload = { odds: allOddsToUpdate };
+    const postRes = UrlFetchApp.fetch(`${WORKER_URL}/update-odds`, {
+      "method": "post",
+      "contentType": "application/json",
+      "payload": JSON.stringify(payload)
+    });
+    Logger.log("Update Result: " + postRes.getContentText());
+  } else {
+    Logger.log("Odds အသစ် မရှိပါ။");
+  }
 }
